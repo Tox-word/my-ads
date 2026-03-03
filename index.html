@@ -4,23 +4,25 @@
     <meta charset="UTF-8">
     <title>Reward Video</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://sad.adsgram.ai/js/sad.min.js"></script>
+    <script src="https://sad.adsgram.ai/js/adsgram-sdk.js"></script>
 </head>
-<body style="background: #000; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh;">
+<body style="background: #000; color: #fff; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; font-family: sans-serif;">
     <p>Загрузка рекламы...</p>
+
     <script>
         const WebApp = window.Telegram.WebApp;
         WebApp.ready();
 
-        // Инициализация рекламы (замени blockId на свой)
-        const AdController = window.Adsgram.init({ blockId: "4444" }); 
+        // Твой актуальный Block ID
+        const AdController = window.Adsgram.init({ blockId: "int-24250" }); 
 
         AdController.show().then((result) => {
-            // Если досмотрел - отправляем боту сигнал
+            // Успешный досмотр
             WebApp.sendData("ad_watched");
             WebApp.close();
         }).catch((result) => {
-            // Если закрыл раньше или ошибка
+            // Ошибка или юзер закрыл окно раньше времени
+            console.error('Adsgram error:', result);
             WebApp.close();
         });
     </script>
