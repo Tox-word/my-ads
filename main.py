@@ -166,28 +166,49 @@ async def cmd_start(message: types.Message, command: CommandObject):
         return await message.answer(bad_msg)
     
     user_id = message.from_user.id
-    ref_id = None
     
-    # 2. Логика реферальной ссылки (args)
-    if command.args and command.args.isdigit():
+    # Получаем данные юзера из базы ДО регистрации
+    existing_user = db.get_user(user_id)
+    
+    # 2. Логика реферальной ссылки
+    ref_id = None
+    if not existing_user and command.args and command.args.isdigit():
         if int(command.args) != user_id:
             ref_id = int(command.args)
     
-    # Регистрация в базе
-    db.add_user(user_id, ref_id)
+    # Регистрация (Функция должна возвращать True если юзер реально новый)
+    is_new = db.add_user(user_id, ref_id)
     
     # 3. Проверка обязательной подписки (ОП)
-    if not await check_main_subs(user_id):
+    is_subscribed = await check_main_subs(user_id)
+    
+    if not is_subscribed:
         channels_str = "\n".join(config.REQUIRED_CHANNELS)
         return await message.answer(
             f"❌ Для работы с ботом подпишись на каналы:\n{channels_str}\n\n"
             f"После подписки снова нажми /start"
         )
-    
+
+    # --- ПУНКТ 2: УВЕДОМЛЕНИЕ ПОСЛЕ ПОДПИСКИ ---
+    # Если юзер только что прошел проверку ОП и он новый
+    if is_new:
+        # Здесь можно добавить пометку в базу, что юзер "активирован"
+        # Но для начала просто уведомим реферера
+        if ref_id:
+            try:
+                await bot.send_message(
+                    chat_id=ref_id,
+                    text=f"👥 **Новый активный реферал!**\n"
+                         f"Пользователь @{message.from_user.username} подписался на каналы и принес вам бонус!"
+                )
+            except:
+                pass
+
     await message.answer(
         f"Привет на ферме! Зарабатывай ⭐ здесь.\nКурс: {config.EXCHANGE_RATE}", 
         reply_markup=kb.main_menu()
     )
+
 
 # --- ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ---
 @dp.callback_query(F.data == "profile")
