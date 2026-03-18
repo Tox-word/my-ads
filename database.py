@@ -12,7 +12,7 @@ def init_db():
     with get_connection() as conn:
         cur = conn.cursor()
         
-        # 1. Таблица пользователей (Добавлены поля для чек-инов и статистики рефов)
+        # 1. Таблица пользователей
         cur.execute('''CREATE TABLE IF NOT EXISTS users 
                        (id BIGINT PRIMARY KEY, 
                         balance REAL DEFAULT 0, 
@@ -45,7 +45,7 @@ def init_db():
                         address TEXT, 
                         status TEXT DEFAULT 'pending')''')
         
-        # 5. Таблица промокодов (НОВОЕ)
+        # 5. Таблица промокодов
         cur.execute('''CREATE TABLE IF NOT EXISTS promos 
                        (code TEXT PRIMARY KEY, 
                         reward REAL, 
@@ -72,6 +72,7 @@ def add_user(user_id, ref_id=None):
 def update_balance(user_id, amount):
     with get_connection() as conn:
         cur = conn.cursor()
+        # Используем round для красоты баланса
         cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s", (round(amount, 2), user_id))
         conn.commit()
 
@@ -102,6 +103,18 @@ def complete_task(user_id, task_id):
         cur.execute("INSERT INTO completed_tasks (user_id, task_id) VALUES (%s, %s)", (user_id, task_id))
         conn.commit()
 
+def delete_task(task_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM tasks WHERE id = %s", (task_id,))
+        conn.commit()
+
+def delete_expired_tasks():
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM tasks WHERE expires_at < %s", (datetime.now(),))
+        conn.commit()
+
 # --- ФУНКЦИИ ВЫВОДА ---
 
 def create_withdrawal(user_id, amount, method, address):
@@ -110,10 +123,8 @@ def create_withdrawal(user_id, amount, method, address):
         cur.execute("INSERT INTO withdrawals (user_id, amount, method, address) VALUES (%s, %s, %s, %s)", 
                     (user_id, amount, method, address))
         conn.commit()
-        cur.execute("SELECT LASTVAL()")
-        return cur.fetchone()[0]
 
-# --- НОВЫЕ ФУНКЦИИ (ЧЕК-ИНЫ И ПРОМО) ---
+# --- ЧЕК-ИНЫ, ПРОМО И СТАТИСТИКА ---
 
 def update_checkin(user_id, streak):
     with get_connection() as conn:
@@ -128,8 +139,41 @@ def get_promo(code):
         cur.execute("SELECT * FROM promos WHERE code = %s", (code,))
         return cur.fetchone()
 
+def add_promo_to_db(code, reward, uses, chan_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO promos (code, reward, uses_left, required_channel_id) VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (code) DO UPDATE SET uses_left = %s, reward = %s", 
+                    (code, reward, uses, chan_id, uses, reward))
+        conn.commit()
+
 def use_promo(code):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE promos SET uses_left = uses_left - 1 WHERE code = %s", (code,))
         conn.commit()
+
+def get_refs_count(user_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM users WHERE ref_id = %s", (user_id,))
+        return cur.fetchone()[0]
+
+def get_admin_stats():
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM users")
+        u_count = cur.fetchone()[0]
+        cur.execute("SELECT SUM(balance) FROM users")
+        total_bal = cur.fetchone()[0] or 0
+        cur.execute("SELECT COUNT(*) FROM tasks")
+        t_count = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM withdrawals WHERE status = 'pending'")
+        w_count = cur.fetchone()[0]
+        
+        return {
+            'users_count': u_count,
+            'total_balance': total_bal,
+            'tasks_count': t_count,
+            'pending_withdraws': w_count
+        }
