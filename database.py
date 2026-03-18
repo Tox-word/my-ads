@@ -68,6 +68,8 @@ def add_user(user_id, ref_id=None):
             cur = conn.cursor()
             cur.execute("INSERT INTO users (id, ref_id) VALUES (%s, %s)", (user_id, ref_id))
             conn.commit()
+        return True  # Пользователь успешно добавлен (НОВЫЙ)
+    return False     # Пользователь уже существует (СТАРЫЙ)
 
 def update_balance(user_id, amount):
     with get_connection() as conn:
