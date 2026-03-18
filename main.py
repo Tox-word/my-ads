@@ -93,18 +93,27 @@ async def admin_del_task(message: types.Message):
 
 # 3. Список всех заданий (для админа)
 @dp.message(F.text == "/tasks", F.from_user.id == config.ADMIN_ID)
-async def admin_list_tasks(message: types.Message):
+@dp.callback_query(F.data == "adm_tasks_list") # Добавляем обработку кнопки из админки
+async def admin_list_tasks(event: types.Message | types.CallbackQuery):
+    # Если это кнопка — берем message из call, если команда — само сообщение
+    message = event if isinstance(event, types.Message) else event.message
+    
     tasks = db.get_all_tasks()
     if not tasks:
-        return await message.answer("📭 Список активных заданий пуст.")
+        text = "📭 Список активных заданий пуст."
+    else:
+        text = "📋 **СПИСОК ВСЕХ ЗАДАНИЙ:**\n\n"
+        for t in tasks:
+            # t[0]-ID, t[1]-title, t[3]-reward
+            text += f"🔹 ID: `{t[0]}` | {t[1]} ({t[3]} ⭐)\n"
+        text += "\nУдалить: `/del ID`"
     
-    text = "📋 **СПИСОК ВСЕХ ЗАДАНИЙ:**\n\n"
-    for t in tasks:
-        # t[0] - ID, t[1] - название, t[3] - награда
-        text += f"🔹 ID: `{t[0]}` | {t[1]} ({t[3]} ⭐)\n"
-    
-    text += "\nУдалить: `/del ID`"
-    await message.answer(text, parse_mode="Markdown")
+    # Если это кнопка, лучше редактировать текст, а не слать новый
+    if isinstance(event, types.CallbackQuery):
+        await message.edit_text(text, parse_mode="Markdown", reply_markup=kb.admin_panel_kb())
+        await event.answer()
+    else:
+        await message.answer(text, parse_mode="Markdown")
 
 # --- УПРАВЛЕНИЕ БАЛАНСОМ (РУЧНОЕ) ---
 
@@ -379,7 +388,27 @@ async def use_promo_cmd(message: types.Message):
     db.update_balance(message.from_user.id, promo[1])
     db.use_promo(code_text)
     await message.answer(f"✅ Активировано! +{promo[1]} ⭐")
+    
+# --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
+@dp.callback_query(F.data == "refs")
+async def show_refs(call: types.CallbackQuery):
+    user_id = call.from_user.id
+    count = db.get_refs_count(user_id)
+    link = f"https://t.me/{(await bot.get_me()).username}?start={user_id}"
+    
+    text = (
+        f"👥 **ВАШИ РЕФЕРАЛЫ**\n\n"
+        f"📈 Уровень 1 (15%): {count} чел.\n"
+        f"🔗 Ваша ссылка для приглашения:\n`{link}`\n\n"
+        f"Приглашайте друзей и получайте процент от их заработка!"
+    )
+    await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
 
+# --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
+@dp.callback_query(F.data == "high_reward")
+async def high_reward_tasks(call: types.CallbackQuery):
+    await call.answer("🔥 Спец-задания появятся скоро!", show_alert=True)
+    
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
 
 async def auto_delete_tasks():
