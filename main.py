@@ -392,40 +392,18 @@ async def daily_checkin(call: types.CallbackQuery):
 
 @dp.message(F.text.startswith("/promo"))
 async def use_promo_cmd(message: types.Message):
-    # Очищаем текст от лишних пробелов
     code_text = message.text.replace("/promo", "").strip()
-    if not code_text:
-        return await message.answer("❓ Введите код: `/promo ВАШ_КОД`", parse_mode="Markdown")
-
-    promo = db.get_promo(code_text) # Ожидаем [code, reward, uses_left, channel_id]
+    promo = db.get_promo(code_text) # [code, reward, uses_left, ...]
     
     if not promo or promo[2] <= 0:
         return await message.answer("❌ Промокод не существует или закончился.")
     
-    # --- ИСПРАВЛЕННЫЙ БЛОК ПРОВЕРКИ ---
-    # Берем channel_id (индекс 3). Если там пусто или 0 — пропускаем проверку.
-    channel_id = promo[3]
-    
-    if channel_id and str(channel_id).strip() not in ["None", "0", ""]:
-        try:
-            # Убеждаемся, что канал начинается с @
-            clean_channel = str(channel_id).strip()
-            if not clean_channel.startswith("@") and not clean_channel.startswith("-"):
-                clean_channel = f"@{clean_channel}"
-
-            chat_member = await bot.get_chat_member(chat_id=clean_channel, user_id=message.from_user.id)
-            if chat_member.status not in ["member", "administrator", "creator"]:
-                return await message.answer(f"❌ Чтобы активировать, подпишись на канал: {clean_channel}")
-        except Exception as e:
-            # Если бот не админ или канала нет — пишем в логи и даем ошибку
-            print(f"DEBUG PROMO: Ошибка проверки канала {channel_id}: {e}")
-            return await message.answer("⚠️ Ошибка: Бот не может проверить подписку на канал этого промокода.")
-
-    # Если проверки пройдены или канала нет — начисляем!
+    # Начисляем без всяких проверок каналов
     db.update_balance(message.from_user.id, promo[1])
     db.use_promo(code_text)
     await message.answer(f"✅ Активировано! +{promo[1]} ⭐")
-    
+
+
 # --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
 @dp.callback_query(F.data == "refs")
 async def show_refs(call: types.CallbackQuery):
