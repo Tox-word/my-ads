@@ -420,27 +420,32 @@ async def show_refs(call: types.CallbackQuery):
     await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
 
 
-# --- ДОПОЛНЕНИЕ: РАССЫЛКА ---
-@dp.callback_query(F.data == "adm_broadcast")
-async def ask_broadcast_text(call: types.CallbackQuery):
-    if call.from_user.id != config.ADMIN_ID: return
-    await call.message.answer("📝 Напиши текст для рассылки (одним сообщением):")
-    await call.answer()
-
-# Обработка текста для рассылки (если сообщение не команда)
-@dp.message(F.from_user.id == config.ADMIN_ID, ~F.text.startswith("/"))
-async def process_broadcast(message: types.Message):
-    users = db.get_all_users() # Убедись, что в database.py есть эта функция
+# --- НОВАЯ БЕЗОПАСНАЯ РАССЫЛКА ---
+@dp.message(F.text.startswith("/send "), F.from_user.id == config.ADMIN_ID)
+async def admin_broadcast_cmd(message: types.Message):
+    broadcast_text = message.text.replace("/send ", "").strip()
+    if not broadcast_text:
+        return await message.answer("❌ Напиши: `/send Твой текст`")
+    
+    users = db.get_all_users()
     count = 0
     await message.answer("🚀 Начинаю рассылку...")
+    
     for user in users:
         try:
-            await bot.send_message(user[0], message.text)
+            await bot.send_message(user[0], broadcast_text)
             count += 1
-            await asyncio.sleep(0.05) # Чтобы ТГ не забанил за спам
+            await asyncio.sleep(0.05) # Защита от бана
         except:
             continue
-    await message.answer(f"✅ Рассылка завершена! Получили: {count} пользователей.")
+            
+    await message.answer(f"✅ Рассылка завершена! Получили: {count} чел.")
+
+# Чтобы бот не реагировал на обычные сообщения:
+@dp.message(F.from_user.id == config.ADMIN_ID, ~F.text.startswith("/"))
+async def ignore_admin_text(message: types.Message):
+    # Просто ничего не делаем или отвечаем эхом, чтобы не было рассылки
+    pass
 
 # --- ДОПОЛНЕНИЕ: ПРОМОКОДЫ ---
 @dp.message(F.text.startswith("/add_promo"), F.from_user.id == config.ADMIN_ID)
