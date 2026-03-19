@@ -452,40 +452,35 @@ async def process_broadcast(message: types.Message):
 @dp.message(F.text.startswith("/add_promo"), F.from_user.id == config.ADMIN_ID)
 async def admin_add_promo(message: types.Message):
     try:
-        # 1. .split() без кавычек убирает любые двойные пробелы и пробелы по краям
+        # Разбиваем сообщение, игнорируя лишние пробелы
         parts = message.text.split()
         
         if len(parts) < 4:
-            return await message.answer("❌ Мало данных! Надо: `/add_promo КОД КОЛ_ВО НАГРАДА`", parse_mode="Markdown")
+            return await message.answer("❌ Формат: `/add_promo КОД КОЛ_ВО НАГРАДА @канал`", parse_mode="Markdown")
 
-        # 2. Берем данные по порядку
         code = parts[1]
         uses = int(parts[2])
-        # Заменяем запятую на точку, чтобы бот не падал от "1,5"
-        reward = float(parts[3].replace(",", ".")) 
-        
-        # 3. Если канал указан (5-й элемент), берем его, если нет — None
+        # Обработка награды (замена запятой на точку для float)
+        reward = float(parts[3].replace(",", "."))
+        # Канал — 5-й элемент (если есть)
         channel = parts[4] if len(parts) > 4 else None
         
-        # 4. Запись в базу
-        db.add_promo(code, reward, uses, channel)
+        # ВЫЗОВ ТВОЕЙ ФУНКЦИИ (название должно совпадать с database.py)
+        db.add_promo_to_db(code, reward, uses, channel)
         
-        res_text = (
-            f"✅ **Промокод создан!**\n\n"
+        await message.answer(
+            f"✅ **Промокод готов!**\n\n"
             f"🎫 Код: `{code}`\n"
             f"💰 Награда: {reward} ⭐\n"
-            f"👥 Лимит: {uses} чел."
+            f"👥 Лимит: {uses} чел.\n"
+            f"📢 Канал: {channel if channel else 'Нет'}",
+            parse_mode="Markdown"
         )
-        if channel:
-            res_text += f"\n📢 Подписка: {channel}"
-            
-        await message.answer(res_text, parse_mode="Markdown")
-        
     except ValueError:
-        await message.answer("❌ Ошибка! КОЛ_ВО и НАГРАДА должны быть числами.")
+        await message.answer("❌ Ошибка: КОЛ_ВО и НАГРАДА должны быть числами (например: 50 0.5)")
     except Exception as e:
-        print(f"Ошибка в промо: {e}")
-        await message.answer("❌ Ошибка! Проверь формат команды.")
+        print(f"Ошибка промокода: {e}")
+        await message.answer("⚠️ Что-то пошло не так. Проверь логи или формат команды.")
 
 
 # --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
