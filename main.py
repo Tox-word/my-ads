@@ -425,6 +425,47 @@ async def show_refs(call: types.CallbackQuery):
     )
     await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
 
+
+# --- ДОПОЛНЕНИЕ: РАССЫЛКА ---
+@dp.callback_query(F.data == "adm_broadcast")
+async def ask_broadcast_text(call: types.CallbackQuery):
+    if call.from_user.id != config.ADMIN_ID: return
+    await call.message.answer("📝 Напиши текст для рассылки (одним сообщением):")
+    await call.answer()
+
+# Обработка текста для рассылки (если сообщение не команда)
+@dp.message(F.from_user.id == config.ADMIN_ID, ~F.text.startswith("/"))
+async def process_broadcast(message: types.Message):
+    users = db.get_all_users() # Убедись, что в database.py есть эта функция
+    count = 0
+    await message.answer("🚀 Начинаю рассылку...")
+    for user in users:
+        try:
+            await bot.send_message(user[0], message.text)
+            count += 1
+            await asyncio.sleep(0.05) # Чтобы ТГ не забанил за спам
+        except:
+            continue
+    await message.answer(f"✅ Рассылка завершена! Получили: {count} пользователей.")
+
+# --- ДОПОЛНЕНИЕ: ПРОМОКОДЫ ---
+@dp.message(F.text.startswith("/add_promo"), F.from_user.id == config.ADMIN_ID)
+async def admin_add_promo(message: types.Message):
+    try:
+        # Формат: /add_promo КОД КОЛ_ВО НАГРАДА @канал
+        parts = message.text.split(" ")
+        code = parts[1]
+        uses = int(parts[2])
+        reward = float(parts[3])
+        channel = parts[4] if len(parts) > 4 else None
+        
+        db.add_promo(code, reward, uses, channel) # Функция в database.py
+        await message.answer(f"✅ Промокод `{code}` на {reward} ⭐ создан!")
+    except:
+        await message.answer("❌ Ошибка! Формат: `/add_promo КОД КОЛ_ВО НАГРАДА @канал`", parse_mode="Markdown")
+
+
+
 # --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
 @dp.callback_query(F.data == "high_reward")
 async def high_reward_tasks(call: types.CallbackQuery):
