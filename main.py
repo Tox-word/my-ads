@@ -452,18 +452,40 @@ async def process_broadcast(message: types.Message):
 @dp.message(F.text.startswith("/add_promo"), F.from_user.id == config.ADMIN_ID)
 async def admin_add_promo(message: types.Message):
     try:
-        # Формат: /add_promo КОД КОЛ_ВО НАГРАДА @канал
-        parts = message.text.split(" ")
+        # 1. .split() без кавычек убирает любые двойные пробелы и пробелы по краям
+        parts = message.text.split()
+        
+        if len(parts) < 4:
+            return await message.answer("❌ Мало данных! Надо: `/add_promo КОД КОЛ_ВО НАГРАДА`", parse_mode="Markdown")
+
+        # 2. Берем данные по порядку
         code = parts[1]
         uses = int(parts[2])
-        reward = float(parts[3])
+        # Заменяем запятую на точку, чтобы бот не падал от "1,5"
+        reward = float(parts[3].replace(",", ".")) 
+        
+        # 3. Если канал указан (5-й элемент), берем его, если нет — None
         channel = parts[4] if len(parts) > 4 else None
         
-        db.add_promo(code, reward, uses, channel) # Функция в database.py
-        await message.answer(f"✅ Промокод `{code}` на {reward} ⭐ создан!")
-    except:
-        await message.answer("❌ Ошибка! Формат: `/add_promo КОД КОЛ_ВО НАГРАДА @канал`", parse_mode="Markdown")
-
+        # 4. Запись в базу
+        db.add_promo(code, reward, uses, channel)
+        
+        res_text = (
+            f"✅ **Промокод создан!**\n\n"
+            f"🎫 Код: `{code}`\n"
+            f"💰 Награда: {reward} ⭐\n"
+            f"👥 Лимит: {uses} чел."
+        )
+        if channel:
+            res_text += f"\n📢 Подписка: {channel}"
+            
+        await message.answer(res_text, parse_mode="Markdown")
+        
+    except ValueError:
+        await message.answer("❌ Ошибка! КОЛ_ВО и НАГРАДА должны быть числами.")
+    except Exception as e:
+        print(f"Ошибка в промо: {e}")
+        await message.answer("❌ Ошибка! Проверь формат команды.")
 
 
 # --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
