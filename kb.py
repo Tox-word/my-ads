@@ -47,3 +47,20 @@ def admin_panel_kb():
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="adm_broadcast")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# Кнопка профиля
+def profile_kb():
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="💳 Вывести ⭐", callback_data="withdraw_request"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="to_main"))
+    return kb.as_markup()
+
+
+
+
+
+
+
+
+
