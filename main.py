@@ -13,6 +13,9 @@ import kb
 from flask import Flask
 from threading import Thread
 
+# Временное хранилище заявок: {user_id: {'method': 'TON', 'amount': 200}}
+withdraw_cache = {}
+
 # --- КРУГЛОСУТОЧНАЯ РАБОТА (Keep Alive) ---
 app = Flask('')
 
@@ -503,54 +506,62 @@ async def high_reward_tasks(call: types.CallbackQuery):
 
 # --- ВЫВОД ---
 
-# 1. Нажатие на "Вывести" в профиле
-@dp.callback_query(F.data == "withdraw_request")
-async def start_withdraw(call: types.CallbackQuery):
-    user = db.get_user(call.from_user.id)
-    if user[2] < 200: # Твой порог в 200 звезд
-        return await call.answer(f"❌ Минимум 200 ⭐ (у вас {user[2]})", show_alert=True)
-    
-    await call.message.edit_text("💳 **Выберите способ вывода:**", reply_markup=kb.withdraw_methods_kb())
-
-# 2. Выбор метода
+# 1. Выбор метода
 @dp.callback_query(F.data.startswith("meth_"))
 async def choose_method(call: types.CallbackQuery):
     method = call.data.split("_")[1].upper()
-    prompt = {
-        "TON": "Введите ваш TON адрес (кошелек):",
-        "USD": "Введите данные для USD вывода (PayPal/Card/Crypto):",
-        "STARS": "Введите @username или ID аккаунта для перевода звезд:"
-    }
+    withdraw_cache[call.from_user.id] = {'method': method} # Запоминаем метод
     
-    # Сохраняем метод в "память" (простой способ без FSM для админа)
-    await call.message.answer(f"✅ Вы выбрали {method}.\n{prompt.get(method)}\n\n(Просто отправьте данные следующим сообщением)")
+    await call.message.answer(f"✅ Выбрано: {method}.\n\n**Шаг 1:** Введите количество ⭐ для вывода (минимум 200):")
     await call.answer()
 
-# 3. Прием реквизитов и отправка админу (тебе)
-@dp.message(F.text, ~F.text.startswith("/")) # Если это просто текст, а не команда
-async def process_withdraw_data(message: types.Message):
+# 2. Обработка ввода (Сумма или Реквизиты)
+@dp.message(F.text, ~F.text.startswith("/"))
+async def process_withdraw_steps(message: types.Message):
     user_id = message.from_user.id
-    user = db.get_user(user_id)
     
-    # Проверяем баланс еще раз на всякий случай
-    if user[2] < 200:
-        return # Игнорим, если баланса нет
-    
-    # Формируем заявку для ТЕБЯ
-    admin_text = (
-        f"💰 **НОВАЯ ЗАЯВКА НА ВЫВОД!**\n\n"
-        f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
-        f"💎 Баланс: {user[2]} ⭐\n"
-        f"📝 Реквизиты: `{message.text}`\n\n"
-        f"Чтобы выдать, используй: `/give {user_id} -200`"
-    )
-    
-    # Отправляем тебе
-    await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
-    
-    # Ответ юзеру
-    await message.answer("✅ **Заявка принята!**\nАдмин проверит данные и произведет выплату в течение 24 часов.")
+    if user_id not in withdraw_cache:
+        return # Игнорируем обычные сообщения
 
+    data = withdraw_cache[user_id]
+
+    # ШАГ 2: Если введена СУММА
+    if 'amount' not in data:
+        if not message.text.isdigit():
+            return await message.answer("❌ Введите число (количество звезд)!")
+        
+        amount = int(message.text)
+        user = db.get_user(user_id)
+        
+        if amount < 200:
+            return await message.answer("❌ Минимальный вывод — 200 ⭐")
+        if amount > user[2]:
+            return await message.answer(f"❌ Недостаточно звезд! У вас: {user[2]} ⭐")
+        
+        withdraw_cache[user_id]['amount'] = amount
+        await message.answer(f"💰 Сумма: {amount} ⭐\n\n**Шаг 2:** Теперь введите реквизиты (кошелек или ID):")
+
+    # ШАГ 3: Если введены РЕКВИЗИТЫ
+    else:
+        method = data['method']
+        amount = data['amount']
+        details = message.text
+        
+        # Отправляем админу (тебе)
+        admin_text = (
+            f"🚀 **НОВАЯ ЗАЯВКА НА ВЫВОД!**\n\n"
+            f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
+            f"💵 Сумма: {amount} ⭐\n"
+            f"💎 Метод: {method}\n"
+            f"📝 Реквизиты: `{details}`\n\n"
+            f"Команда для списания: `/give {user_id} -{amount}`"
+        )
+        
+        await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
+        await message.answer("✅ **Заявка отправлена!**\nАдмин проверит данные и начислит средства в течение 24 часов.")
+        
+        # Очищаем кэш для этого юзера
+        del withdraw_cache[user_id]
 
     
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
