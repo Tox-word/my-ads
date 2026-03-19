@@ -496,32 +496,6 @@ async def auto_delete_tasks():
         await asyncio.sleep(600)
 
 
-
-
-
-
-
-@dp.message(F.text == "/db_clear_all", F.from_user.id == config.ADMIN_ID)
-async def secret_db_clear(message: types.Message):
-    try:
-        with db.get_connection() as conn:
-            cur = conn.cursor()
-            # Команда очистки всех таблиц
-            cur.execute("TRUNCATE TABLE users, tasks, promos, completed_tasks CASCADE;")
-            conn.commit()
-        await message.answer("🚀 **БАЗА ДАННЫХ ПОЛНОСТЬЮ ОЧИЩЕНА!**\nВсе балансы, юзеры и промокоды удалены.")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка при очистке: {e}")
-
-
-
-
-
-
-
-
-
-
 async def start_bot():
     db.init_db()
     asyncio.create_task(auto_delete_tasks())
