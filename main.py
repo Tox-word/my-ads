@@ -395,24 +395,27 @@ async def use_promo_cmd(message: types.Message, command: CommandObject):
     if not command.args:
         return await message.answer("❓ **Как ввести код:**\nНапишите: `/promo ТВОЙ_КОД`", parse_mode="Markdown")
 
-    code_text = command.args.strip()
+    code_text = command.args.strip().upper() # Делаем капсом для надежности
     user_id = message.from_user.id
     promo = db.get_promo(code_text)
     
     if not promo or promo[2] <= 0:
         return await message.answer("❌ Промокод не существует или закончился.")
     
-    # ПРОВЕРКА: Делал ли он это раньше? (promo_ID)
+    # ПРОВЕРКА: Использовал ли он его?
     p_id = f"p_{code_text}"
     if db.check_task_completed(user_id, p_id):
         return await message.answer("🚫 Вы уже использовали этот код!")
 
-    # Начисляем
-    db.update_balance(user_id, promo[1])
-    db.use_promo(code_text)
-    db.add_completed_task(user_id, p_id) # Блокируем повтор
-    
-    await message.answer(f"✅ Успешно! +{promo[1]} ⭐")
+    # Начисляем (убедись, что в database.py эти функции работают)
+    try:
+        db.update_balance(user_id, promo[1])
+        db.use_promo(code_text)
+        db.add_completed_task(user_id, p_id) # Блокируем повтор
+        await message.answer(f"✅ Успешно! +{promo[1]} ⭐")
+    except Exception as e:
+        print(f"Ошибка промо: {e}")
+        await message.answer("⚠️ Ошибка базы данных при активации.")
 
 
 # --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
