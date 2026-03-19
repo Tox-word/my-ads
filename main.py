@@ -392,15 +392,30 @@ async def daily_checkin(call: types.CallbackQuery):
 
 @dp.message(F.text.startswith("/promo"))
 async def use_promo_cmd(message: types.Message):
-    code_text = message.text.replace("/promo", "").strip()
-    promo = db.get_promo(code_text) # [code, reward, uses_left, ...]
-    
+    # Если юзер просто нажал на команду в меню без кода
+    parts = message.text.split()
+    if len(parts) < 2:
+        return await message.answer("❓ **Как использовать промокод:**\nПиши: `/promo ТВОЙ_КОД` (через пробел)", parse_mode="Markdown")
+
+    code_text = parts[1].strip()
+    user_id = message.from_user.id
+
+    # 1. Проверяем, существует ли код
+    promo = db.get_promo(code_text)
     if not promo or promo[2] <= 0:
         return await message.answer("❌ Промокод не существует или закончился.")
-    
-    # Начисляем без всяких проверок каналов
-    db.update_balance(message.from_user.id, promo[1])
+
+    # 2. ПРОВЕРКА: Использовал ли юзер этот промокод ранее?
+    # Мы используем уникальный ID для записи: "promo_названиекода"
+    promo_task_id = f"promo_{code_text}"
+    if db.check_task_completed(user_id, promo_task_id):
+        return await message.answer("🚫 Вы уже активировали этот промокод!")
+
+    # 3. Начисляем и записываем в историю
+    db.update_balance(user_id, promo[1])
     db.use_promo(code_text)
+    db.add_completed_task(user_id, promo_task_id) # Записываем, что юзер его "выполнил"
+    
     await message.answer(f"✅ Активировано! +{promo[1]} ⭐")
 
 
