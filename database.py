@@ -179,3 +179,9 @@ def get_admin_stats():
             'tasks_count': t_count,
             'pending_withdraws': w_count
         }
+
+def get_all_users():
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users")
+        return cur.fetchall()
