@@ -395,31 +395,45 @@ async def daily_checkin(call: types.CallbackQuery):
 
 @dp.message(Command("promo"))
 async def use_promo_cmd(message: types.Message, command: CommandObject):
-    if not command.args:
-        return await message.answer("❓ **Как ввести код:**\nНапишите: `/promo ТВОЙ_КОД`", parse_mode="Markdown")
-
-    code_text = command.args.strip().upper() # Делаем капсом для надежности
     user_id = message.from_user.id
+    
+    # 1. Если юзер ввел просто /promo без аргументов
+    if not command.args:
+        return await message.answer(
+            "❓ **Как активировать промокод?**\n\n"
+            "Введите команду и код через пробел, например:\n"
+            "`/promo ТЕСТ`", 
+            parse_mode="Markdown"
+        )
+
+    # 2. Если аргументы есть, берем первый (сам код)
+    code_text = command.args.split()[0].upper().strip()
+    
+    # 3. Ищем код в базе
     promo = db.get_promo(code_text)
     
-    if not promo or promo[2] <= 0:
-        return await message.answer("❌ Промокод не существует или закончился.")
+    if not promo:
+        return await message.answer("❌ Такого промокода не существует.")
     
-    # ПРОВЕРКА: Использовал ли он его?
+    if promo[2] <= 0:
+        return await message.answer("❌ Этот промокод уже закончился.")
+    
+    # 4. Проверка на повторное использование (promo_ID)
     p_id = f"p_{code_text}"
     if db.check_task_completed(user_id, p_id):
-        return await message.answer("🚫 Вы уже использовали этот код!")
+        return await message.answer("🚫 Вы уже использовали этот промокод!")
 
-    # Начисляем (убедись, что в database.py эти функции работают)
+    # 5. Начисление
     try:
         db.update_balance(user_id, promo[1])
         db.use_promo(code_text)
-        db.add_completed_task(user_id, p_id) # Блокируем повтор
-        await message.answer(f"✅ Успешно! +{promo[1]} ⭐")
+        db.add_completed_task(user_id, p_id)
+        
+        await message.answer(f"✅ Успешно! Вам начислено **{promo[1]} ⭐**", parse_mode="Markdown")
     except Exception as e:
-        print(f"Ошибка промо: {e}")
-        await message.answer("⚠️ Ошибка базы данных при активации.")
-
+        print(f"Ошибка БД в промо: {e}")
+        await message.answer("⚠️ Произошла ошибка при активации. Попробуйте позже.")
+        
 
 # --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
 @dp.callback_query(F.data == "refs")
