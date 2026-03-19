@@ -30,10 +30,10 @@ def init_db():
                         chat_id TEXT,
                         expires_at TIMESTAMP)''')
         
-        # 3. Таблица выполненных заданий
+# 3. Таблица выполненных заданий (теперь task_id — это TEXT)
         cur.execute('''CREATE TABLE IF NOT EXISTS completed_tasks 
                        (user_id BIGINT, 
-                        task_id INTEGER, 
+                        task_id TEXT, 
                         PRIMARY KEY (user_id, task_id))''')
 
         # 4. Таблица заявок на вывод
@@ -93,18 +93,6 @@ def get_all_tasks():
         cur.execute("SELECT * FROM tasks")
         return cur.fetchall()
 
-def is_task_completed(user_id, task_id):
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT 1 FROM completed_tasks WHERE user_id = %s AND task_id = %s", (user_id, task_id))
-        return cur.fetchone() is not None
-
-def complete_task(user_id, task_id):
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO completed_tasks (user_id, task_id) VALUES (%s, %s)", (user_id, task_id))
-        conn.commit()
-
 def delete_task(task_id):
     with get_connection() as conn:
         cur = conn.cursor()
@@ -140,14 +128,6 @@ def get_promo(code):
         cur = conn.cursor()
         cur.execute("SELECT * FROM promos WHERE code = %s", (code,))
         return cur.fetchone()
-
-def add_promo_to_db(code, reward, uses, chan_id):
-    with get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO promos (code, reward, uses_left, required_channel_id) VALUES (%s, %s, %s, %s) "
-                    "ON CONFLICT (code) DO UPDATE SET uses_left = %s, reward = %s", 
-                    (code, reward, uses, chan_id, uses, reward))
-        conn.commit()
 
 def use_promo(code):
     with get_connection() as conn:
@@ -185,3 +165,30 @@ def get_all_users():
         cur = conn.cursor()
         cur.execute("SELECT id FROM users")
         return cur.fetchall()
+
+
+
+
+# Универсальная проверка: выполнено ли задание или активирован ли промокод
+def check_task_completed(user_id, task_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        # Приводим task_id к строке на случай, если пришло число
+        cur.execute("SELECT 1 FROM completed_tasks WHERE user_id = %s AND task_id = %s", (user_id, str(task_id)))
+        return cur.fetchone() is not None
+
+# Запись о выполнении (и для обычных задач, и для промо)
+def add_completed_task(user_id, task_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO completed_tasks (user_id, task_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (user_id, str(task_id)))
+        conn.commit()
+
+# Функция для создания промокода (у тебя в main.py она называется add_promo)
+def add_promo(code, reward, uses, chan_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO promos (code, reward, uses_left, required_channel_id) VALUES (%s, %s, %s, %s) "
+                    "ON CONFLICT (code) DO UPDATE SET uses_left = %s, reward = %s", 
+                    (code.upper(), reward, uses, chan_id, uses, reward))
+        conn.commit()
