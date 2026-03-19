@@ -56,8 +56,14 @@ def profile_kb():
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="to_main"))
     return kb.as_markup()
 
-
-
+# Кнопка выбора валюты для вывода
+def withdraw_methods_kb():
+    builder = InlineKeyboardBuilder()
+    builder.row(types.InlineKeyboardButton(text="💎 TON (Кошелек)", callback_data="meth_ton"))
+    builder.row(types.InlineKeyboardButton(text="💵 Доллары (USD)", callback_data="meth_usd"))
+    builder.row(types.InlineKeyboardButton(text="⭐ Звезды (Stars)", callback_data="meth_stars"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="to_profile"))
+    return builder.as_markup()
 
 
 
