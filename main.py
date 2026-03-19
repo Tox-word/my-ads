@@ -390,33 +390,29 @@ async def daily_checkin(call: types.CallbackQuery):
 
 # --- ПРОМОКОДЫ ---
 
-@dp.message(F.text.startswith("/promo"))
-async def use_promo_cmd(message: types.Message):
-    # Если юзер просто нажал на команду в меню без кода
-    parts = message.text.split()
-    if len(parts) < 2:
-        return await message.answer("❓ **Как использовать промокод:**\nПиши: `/promo ТВОЙ_КОД` (через пробел)", parse_mode="Markdown")
+@dp.message(Command("promo"))
+async def use_promo_cmd(message: types.Message, command: CommandObject):
+    if not command.args:
+        return await message.answer("❓ **Как ввести код:**\nНапишите: `/promo ТВОЙ_КОД`", parse_mode="Markdown")
 
-    code_text = parts[1].strip()
+    code_text = command.args.strip()
     user_id = message.from_user.id
-
-    # 1. Проверяем, существует ли код
     promo = db.get_promo(code_text)
+    
     if not promo or promo[2] <= 0:
         return await message.answer("❌ Промокод не существует или закончился.")
+    
+    # ПРОВЕРКА: Делал ли он это раньше? (promo_ID)
+    p_id = f"p_{code_text}"
+    if db.check_task_completed(user_id, p_id):
+        return await message.answer("🚫 Вы уже использовали этот код!")
 
-    # 2. ПРОВЕРКА: Использовал ли юзер этот промокод ранее?
-    # Мы используем уникальный ID для записи: "promo_названиекода"
-    promo_task_id = f"promo_{code_text}"
-    if db.check_task_completed(user_id, promo_task_id):
-        return await message.answer("🚫 Вы уже активировали этот промокод!")
-
-    # 3. Начисляем и записываем в историю
+    # Начисляем
     db.update_balance(user_id, promo[1])
     db.use_promo(code_text)
-    db.add_completed_task(user_id, promo_task_id) # Записываем, что юзер его "выполнил"
+    db.add_completed_task(user_id, p_id) # Блокируем повтор
     
-    await message.answer(f"✅ Активировано! +{promo[1]} ⭐")
+    await message.answer(f"✅ Успешно! +{promo[1]} ⭐")
 
 
 # --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
@@ -501,6 +497,58 @@ async def admin_add_promo(message: types.Message):
 @dp.callback_query(F.data == "high_reward")
 async def high_reward_tasks(call: types.CallbackQuery):
     await call.answer("🔥 Спец-задания появятся скоро!", show_alert=True)
+
+# --- ВЫВОД ---
+
+# 1. Нажатие на "Вывести" в профиле
+@dp.callback_query(F.data == "withdraw_request")
+async def start_withdraw(call: types.CallbackQuery):
+    user = db.get_user(call.from_user.id)
+    if user[2] < 200: # Твой порог в 200 звезд
+        return await call.answer(f"❌ Минимум 200 ⭐ (у вас {user[2]})", show_alert=True)
+    
+    await call.message.edit_text("💳 **Выберите способ вывода:**", reply_markup=kb.withdraw_methods_kb())
+
+# 2. Выбор метода
+@dp.callback_query(F.data.startswith("meth_"))
+async def choose_method(call: types.CallbackQuery):
+    method = call.data.split("_")[1].upper()
+    prompt = {
+        "TON": "Введите ваш TON адрес (кошелек):",
+        "USD": "Введите данные для USD вывода (PayPal/Card/Crypto):",
+        "STARS": "Введите @username или ID аккаунта для перевода звезд:"
+    }
+    
+    # Сохраняем метод в "память" (простой способ без FSM для админа)
+    await call.message.answer(f"✅ Вы выбрали {method}.\n{prompt.get(method)}\n\n(Просто отправьте данные следующим сообщением)")
+    await call.answer()
+
+# 3. Прием реквизитов и отправка админу (тебе)
+@dp.message(F.text, ~F.text.startswith("/")) # Если это просто текст, а не команда
+async def process_withdraw_data(message: types.Message):
+    user_id = message.from_user.id
+    user = db.get_user(user_id)
+    
+    # Проверяем баланс еще раз на всякий случай
+    if user[2] < 200:
+        return # Игнорим, если баланса нет
+    
+    # Формируем заявку для ТЕБЯ
+    admin_text = (
+        f"💰 **НОВАЯ ЗАЯВКА НА ВЫВОД!**\n\n"
+        f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
+        f"💎 Баланс: {user[2]} ⭐\n"
+        f"📝 Реквизиты: `{message.text}`\n\n"
+        f"Чтобы выдать, используй: `/give {user_id} -200`"
+    )
+    
+    # Отправляем тебе
+    await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
+    
+    # Ответ юзеру
+    await message.answer("✅ **Заявка принята!**\nАдмин проверит данные и произведет выплату в течение 24 часов.")
+
+
     
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
 
