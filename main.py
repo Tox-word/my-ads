@@ -215,7 +215,7 @@ async def cmd_start(message: types.Message, command: CommandObject):
     user_data = db.get_user(user_id)
     # ПРОВЕРЬ ИНДЕКС: если в таблице users колонка ref_bonus_given 
     # идет шестой по счету, то индекс будет [5]
-    bonus_already_given = user_data[5] if user_data else True 
+    bonus_already_given = user_data[6] if user_data else True 
 
     # 2. Проверяем: подписан ли он И не давали ли мы за него бонус ранее
     if is_subscribed and not bonus_already_given:
