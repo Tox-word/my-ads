@@ -443,22 +443,19 @@ async def show_refs(call: types.CallbackQuery):
     l1, l2 = db.get_detailed_refs(call.from_user.id)
     link = f"https://t.me/{(await bot.get_me()).username}?start={call.from_user.id}"
     
-text = (
+    text = (
         f"👥 **ВАША КОМАНДА**\n\n"
         f"🥇 **Уровень 1:**\n"
         f"├ Рефералов: **{l1}** чел.\n"
         f"└ Бонус: **+5.0 ⭐** за вход + **10%** с заданий\n\n"
-        
         f"🥈 **Уровень 2:**\n"
         f"├ Рефералов: **{l2}** чел.\n"
         f"└ Бонус: **+1.0 ⭐** за вход + **5%** с заданий\n\n"
-        
-        f"🔗 **Ваша ссылка для приглашения:**\n"
-        f"`{link}`\n\n"
-        f"🚀 _Приглашайте друзей и зарабатывайте на их активности!_"
+        f"🔗 **Ваша ссылка:**\n"
+        f"`{link}`"
     )
-
-await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
+    # Проверь, чтобы await был ровно под text
+    await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
 
 # --- НОВАЯ БЕЗОПАСНАЯ РАССЫЛКА ---
 @dp.message(F.text.startswith("/send "), F.from_user.id == config.ADMIN_ID)
