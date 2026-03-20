@@ -17,7 +17,6 @@ from threading import Thread
 withdraw_cache = {}
 
 # Временное хранилище промокодов
-withdraw_cache = {}
 promo_cache = {} # В начало файла к withdraw_cache
 
 # --- КРУГЛОСУТОЧНАЯ РАБОТА (Keep Alive) ---
@@ -399,47 +398,12 @@ async def daily_checkin(call: types.CallbackQuery):
 
 # --- ПРОМОКОДЫ ---
 
-@dp.message(Command("promo"))
-async def use_promo_cmd(message: types.Message, command: CommandObject):
-    user_id = message.from_user.id
-    
-    # 1. Если юзер ввел просто /promo без аргументов
-    if not command.args:
-        return await message.answer(
-            "❓ **Как активировать промокод?**\n\n"
-            "Введите команду и код через пробел, например:\n"
-            "`/promo ТЕСТ`", 
-            parse_mode="Markdown"
-        )
-
-    # 2. Если аргументы есть, берем первый (сам код)
-    code_text = command.args.split()[0].upper().strip()
-    
-    # 3. Ищем код в базе
-    promo = db.get_promo(code_text)
-    
-    if not promo:
-        return await message.answer("❌ Такого промокода не существует.")
-    
-    if promo[2] <= 0:
-        return await message.answer("❌ Этот промокод уже закончился.")
-    
-    # 4. Проверка на повторное использование (promo_ID)
-    p_id = f"p_{code_text}"
-    if db.check_task_completed(user_id, p_id):
-        return await message.answer("🚫 Вы уже использовали этот промокод!")
-
-    # 5. Начисление
-    try:
-        db.update_balance(user_id, promo[1])
-        db.use_promo(code_text)
-        db.add_completed_task(user_id, p_id)
-        
-        await message.answer(f"✅ Успешно! Вам начислено **{promo[1]} ⭐**", parse_mode="Markdown")
-    except Exception as e:
-        print(f"Ошибка БД в промо: {e}")
-        await message.answer("⚠️ Произошла ошибка при активации. Попробуйте позже.")
-        
+@dp.callback_query(F.data == "promo_activate")
+async def promo_btn_handler(call: types.CallbackQuery):
+    # Включаем режим ожидания кода для этого юзера
+    promo_cache[call.from_user.id] = True
+    await call.message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
+    await call.answer()
 
 # --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
 @dp.callback_query(F.data == "refs")
@@ -482,102 +446,90 @@ async def admin_broadcast_cmd(message: types.Message):
             
     await message.answer(f"✅ Рассылка завершена! Получили: {count} чел.")
 
-# --- ПРОМОКОДЫ И ВВОД (ОБЪЕДИНЕННЫЙ ХЕНДЛЕР) ---
-
-@dp.message(F.text == "🎁 Промокод")
+# --- ПРОМОКОДЫ: КНОПКА ---
+@dp.message(F.text == "🎫 Промокод")
 async def promo_btn_handler(message: types.Message):
     promo_cache[message.from_user.id] = True
     await message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
-
-@dp.message(F.text, ~F.text.startswith("/"))
-async def handle_text_inputs(message: types.Message):
-    user_id = message.from_user.id
-    text = message.text
-
-    # 1. ЛОГИКА ПРОМОКОДА
-    if promo_cache.get(user_id):
-        promo = db.get_promo(text.upper().strip())
-        if not promo:
-            await message.answer("❌ Такого промокода не существует.")
-        elif promo[2] <= 0:
-            await message.answer("❌ Этот промокод закончился.")
-        else:
-            p_id = f"p_{text.upper().strip()}"
-            if db.is_task_completed(user_id, p_id):
-                await message.answer("🚫 Вы уже использовали этот код.")
-            else:
-                db.update_balance(user_id, promo[1])
-                db.add_completed_task(user_id, p_id)
-                db.use_promo(text.upper().strip())
-                await message.answer(f"✅ Успешно! Начислено **{promo[1]} ⭐**", parse_mode="Markdown")
-        del promo_cache[user_id]
-        return
-
+    # ВСЁ, ЧТО БЫЛО НИЖЕ ЗДЕСЬ — УДАЛЕНО, так как оно теперь в handle_all_text
 
 # --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
 @dp.callback_query(F.data == "high_reward")
 async def high_reward_tasks(call: types.CallbackQuery):
     await call.answer("🔥 Спец-задания появятся скоро!", show_alert=True)
 
-# --- ВЫВОД ---
-
-# 1. Выбор метода
+# --- ВЫВОД: ВЫБОР МЕТОДА ---
 @dp.callback_query(F.data.startswith("meth_"))
 async def choose_method(call: types.CallbackQuery):
     method = call.data.split("_")[1].upper()
-    withdraw_cache[call.from_user.id] = {'method': method} # Запоминаем метод
-    
+    withdraw_cache[call.from_user.id] = {'method': method}
     await call.message.answer(f"✅ Выбрано: {method}.\n\n**Шаг 1:** Введите количество ⭐ для вывода (минимум 200):")
     await call.answer()
 
-# 2. Обработка ввода (Сумма или Реквизиты)
+# --- ЕДИНЫЙ ОБРАБОТЧИК ТЕКСТА (ПРОМО + ВЫВОД) ---
 @dp.message(F.text, ~F.text.startswith("/"))
-async def process_withdraw_steps(message: types.Message):
+async def handle_all_text(message: types.Message):
     user_id = message.from_user.id
-    
-    if user_id not in withdraw_cache:
-        return # Игнорируем обычные сообщения
+    text = message.text
 
-    data = withdraw_cache[user_id]
+    # 1. ЛОГИКА ПРОМОКОДА
+    if promo_cache.get(user_id):
+        code = text.upper().strip()
+        promo = db.get_promo(code)
+        
+        if not promo:
+            await message.answer("❌ Такого промокода не существует.")
+        elif promo[2] <= 0:
+            await message.answer("❌ Этот промокод закончился.")
+        else:
+            p_id = f"p_{code}"
+            if db.is_task_completed(user_id, p_id):
+                await message.answer("🚫 Вы уже использовали этот код.")
+            else:
+                db.update_balance(user_id, promo[1])
+                db.add_completed_task(user_id, p_id)
+                db.use_promo(code)
+                await message.answer(f"✅ Успешно! Начислено **{promo[1]} ⭐**", parse_mode="Markdown")
+        
+        del promo_cache[user_id]
+        return
 
-    # ШАГ 2: Если введена СУММА
-    if 'amount' not in data:
-        if not message.text.isdigit():
-            return await message.answer("❌ Введите число (количество звезд)!")
-        
-        amount = int(message.text)
-        user = db.get_user(user_id)
-        
-        if amount < 200:
-            return await message.answer("❌ Минимальный вывод — 200 ⭐")
-        if amount > user[1]:
-            return await message.answer(f"❌ Недостаточно звезд! У вас: {user[1]} ⭐")
-        
-        withdraw_cache[user_id]['amount'] = amount
-        await message.answer(f"💰 Сумма: {amount} ⭐\n\n**Шаг 2:** Теперь введите реквизиты (кошелек или ID):")
+    # 2. ЛОГИКА ВЫВОДА
+    if user_id in withdraw_cache:
+        data = withdraw_cache[user_id]
 
-    # ШАГ 3: Если введены РЕКВИЗИТЫ
-    else:
-        method = data['method']
-        amount = data['amount']
-        details = message.text
-        
-        # Отправляем админу (тебе)
-        admin_text = (
-            f"🚀 **НОВАЯ ЗАЯВКА НА ВЫВОД!**\n\n"
-            f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
-            f"💵 Сумма: {amount} ⭐\n"
-            f"💎 Метод: {method}\n"
-            f"📝 Реквизиты: `{details}`\n\n"
-            f"Команда для списания: `/give {user_id} -{amount}`"
-        )
-        
-        await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
-        await message.answer("✅ **Заявка отправлена!**\nАдмин проверит данные и начислит средства в течение 24 часов.")
-        
-        # Очищаем кэш для этого юзера
-        del withdraw_cache[user_id]
+        if 'amount' not in data:
+            if not text.isdigit():
+                return await message.answer("❌ Введите число (количество звезд)!")
+            
+            amount = int(text)
+            user = db.get_user(user_id)
+            
+            if amount < 200:
+                return await message.answer("❌ Минимальный вывод — 200 ⭐")
+            if amount > user[1]:
+                return await message.answer(f"❌ Недостаточно звезд! У вас: {user[1]} ⭐")
+            
+            withdraw_cache[user_id]['amount'] = amount
+            await message.answer(f"💰 Сумма: {amount} ⭐\n\n**Шаг 2:** Теперь введите реквизиты (кошелек или ID):")
 
+        else:
+            method = data['method']
+            amount = data['amount']
+            
+            admin_text = (
+                f"🚀 **НОВАЯ ЗАЯВКА НА ВЫВОД!**\n\n"
+                f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
+                f"💵 Сумма: {amount} ⭐\n"
+                f"💎 Метод: {method}\n"
+                f"📝 Реквизиты: `{text}`\n\n"
+                f"Команда: `/give {user_id} -{amount}`"
+            )
+            
+            await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
+            await message.answer("✅ **Заявка отправлена!**\nОжидайте выплату в течение 24 часов.")
+            del withdraw_cache[user_id]
+        return
     
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
 
