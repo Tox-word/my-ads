@@ -438,18 +438,16 @@ async def use_promo_cmd(message: types.Message, command: CommandObject):
 # --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
 @dp.callback_query(F.data == "refs")
 async def show_refs(call: types.CallbackQuery):
-    user_id = call.from_user.id
-    count = db.get_refs_count(user_id)
-    link = f"https://t.me/{(await bot.get_me()).username}?start={user_id}"
+    l1, l2 = db.get_detailed_refs(call.from_user.id)
+    link = f"https://t.me/{(await bot.get_me()).username}?start={call.from_user.id}"
     
     text = (
-        f"👥 **ВАШИ РЕФЕРАЛЫ**\n\n"
-        f"📈 Уровень 1 (15%): {count} чел.\n"
-        f"🔗 Ваша ссылка для приглашения:\n`{link}`\n\n"
-        f"Приглашайте друзей и получайте процент от их заработка!"
+        f"👥 **ВАША КОМАНДА**\n\n"
+        f"🥇 Уровень 1 (+1 ⭐): **{l1}** чел.\n"
+        f"🥈 Уровень 2 (+0.5 ⭐): **{l2}** чел.\n\n"
+        f"🔗 Ссылка:\n`{link}`"
     )
     await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
-
 
 # --- НОВАЯ БЕЗОПАСНАЯ РАССЫЛКА ---
 @dp.message(F.text.startswith("/send "), F.from_user.id == config.ADMIN_ID)
