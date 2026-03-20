@@ -458,7 +458,7 @@ text = (
         f"🚀 _Приглашайте друзей и зарабатывайте на их активности!_"
     )
 
-    await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
+await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
 
 # --- НОВАЯ БЕЗОПАСНАЯ РАССЫЛКА ---
 @dp.message(F.text.startswith("/send "), F.from_user.id == config.ADMIN_ID)
