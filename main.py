@@ -120,6 +120,20 @@ async def admin_list_tasks(event: types.Message | types.CallbackQuery):
         await event.answer()
     else:
         await message.answer(text, parse_mode="Markdown")
+        
+@dp.message(Command("add_promo"), F.from_user.id == config.ADMIN_ID)
+async def admin_add_promo(message: types.Message, command: CommandObject):
+    try:
+        # Формат: /add_promo КОД СУММА КОЛ-ВО
+        args = command.args.split()
+        code = args[0].upper()
+        reward = float(args[1])
+        uses = int(args[2])
+        
+        db.add_promo(code, reward, uses) # Убедись, что в database.py есть эта функция
+        await message.answer(f"✅ Промокод `{code}` на {reward} ⭐ создан! (Лимит: {uses})")
+    except:
+        await message.answer("❌ Ошибка! Пиши: `/add_promo СЕКРЕТ 50 100`")
 
 # --- УПРАВЛЕНИЕ БАЛАНСОМ (РУЧНОЕ) ---
 
@@ -195,28 +209,43 @@ async def cmd_start(message: types.Message, command: CommandObject):
             f"После подписки снова нажми /start"
         )
 
-    # --- ПУНКТ 2: УВЕДОМЛЕНИЕ ПОСЛЕ ПОДПИСКИ ---
-    # Если юзер только что прошел проверку ОП и он новый
-# --- НАЧИСЛЕНИЕ ЗА РЕФЕРАЛА (Только если он НОВЫЙ и ПОДПИСАЛСЯ) ---
-    if is_new and is_subscribed:
-        if ref_id:
-            # Начисляем пригласителю 1 звезду
-            db.update_balance(ref_id, 5.0)
-            
-            # Ищем "дедушку" (L2)
-            parent_data = db.get_user(ref_id)
-            grandpa_id = parent_data[2] if parent_data else None
-            
-            if grandpa_id:
-                # Начисляем дедушке 0.5 звезды
-                db.update_balance(grandpa_id, 1.0)
+# --- НАЧИСЛЕНИЕ ЗА РЕФЕРАЛА (ВСТАВЛЯТЬ СЮДА) ---
+    
+    # 1. Получаем свежие данные юзера из базы
+    user_data = db.get_user(user_id)
+    # ПРОВЕРЬ ИНДЕКС: если в таблице users колонка ref_bonus_given 
+    # идет шестой по счету, то индекс будет [5]
+    bonus_already_given = user_data[5] if user_data else True 
 
+    # 2. Проверяем: подписан ли он И не давали ли мы за него бонус ранее
+    if is_subscribed and not bonus_already_given:
+        # Достаем того, кто его пригласил
+        actual_ref_id = user_data[2] if user_data else None
+        
+        if actual_ref_id:
+            # Начисляем Папе (L1)
+            db.update_balance(actual_ref_id, 5.0)
+            
+            # Ищем Дедушку (L2)
+            parent_data = db.get_user(actual_ref_id)
+            if parent_data and parent_data[2]:
+                db.update_balance(parent_data[2], 1.0)
+            
+            # Уведомляем Папу
             try:
-                # Уведомляем реферера о деньгах
-                await bot.send_message(ref_id, f"👥 У вас новый активный реферал!\n💰 Бонус: +1.0 ⭐ за подписку!")
+                await bot.send_message(
+                    actual_ref_id, 
+                    "👥 **У вас новый активный реферал!**\n💰 Вам начислено: **5.0 ⭐**", 
+                    parse_mode="Markdown"
+                )
             except:
                 pass
+        
+        # СТАВИМ ГАЛОЧКУ: бонус за этого юзера выдан, больше не платим
+        db.mark_bonus_given(user_id)
 
+    # 4. Финальный ответ: Главное меню
+    await message.answer(f"✅ Подписка подтверждена! Добро пожаловать в Money Farm!", reply_markup=kb.main_menu())
 
 # --- ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ---
 @dp.callback_query(F.data == "profile")
@@ -273,104 +302,99 @@ async def view_task(call: types.CallbackQuery):
             parse_mode="Markdown"
         )
 
-# --- ПРОВЕРКА ВЫПОЛНЕНИЯ И НАЧИСЛЕНИЕ (2 УРОВНЯ РЕФКИ) ---
 
+# Рефка
 @dp.callback_query(F.data.startswith("check_"))
 async def check_sub_task(call: types.CallbackQuery):
     task_id = int(call.data.split("_")[1])
-    task = next((t for t in db.get_all_tasks() if t[0] == task_id), None)
     user_id = call.from_user.id
+
+    # 1. ПРОВЕРКА: Не выполнял ли юзер это задание раньше?
+    if db.is_task_completed(user_id, task_id):
+        return await call.answer("🚫 Вы уже получили награду за это задание!", show_alert=True)
+
+    # Получаем данные о задании
+    task = next((t for t in db.get_all_tasks() if t[0] == task_id), None)
+    if not task:
+        return await call.answer("⚠️ Задание не найдено.", show_alert=True)
     
     try:
-        # task[4] - это chat_id канала (например @mychannel)
+        # Проверка подписки в канале (task[4] — это ID или @канала)
         member = await bot.get_chat_member(chat_id=task[4], user_id=user_id)
+        
         if member.status in ["member", "administrator", "creator"]:
-            # 1. Начисляем юзеру за задание
-            db.update_balance(user_id, task[3])
-            db.complete_task(user_id, task_id)
+            reward = task[3] # Основная награда юзеру
             
-            # 2. РЕФЕРАЛЬНЫЕ НАЧИСЛЕНИЯ (L1 - 15%, L2 - 10%)
-            user_data = db.get_user(user_id) # [id, balance, ref_id...]
-            parent_id = user_data[2] # Кто пригласил юзера
+            # 2. НАЧИСЛЯЕМ ЮЗЕРУ
+            db.update_balance(user_id, reward)
+            db.complete_task(user_id, task_id) # Помечаем как выполненное В БАЗЕ
+            
+            # 3. РЕФЕРАЛЬНЫЕ НАЧИСЛЕНИЯ
+            user_data = db.get_user(user_id)
+            parent_id = user_data[2] if user_data else None # Тот, кто пригласил
             
             if parent_id:
-                # Начисляем Папе (L1)
-                reward_l1 = task[3] * 0.10
+                # Начисляем Папе (L1) — 10%
+                reward_l1 = round(reward * 0.10, 2)
                 db.update_balance(parent_id, reward_l1)
                 
-                # Ищем Дедушку (L2)
+                # Ищем Дедушку (L2) — 5%
                 parent_data = db.get_user(parent_id)
                 grandpa_id = parent_data[2] if parent_data else None
                 
                 if grandpa_id:
-                    # Начисляем Дедушке (L2)
-                    reward_l2 = task[3] * 0.05
+                    reward_l2 = round(reward * 0.05, 2)
                     db.update_balance(grandpa_id, reward_l2)
             
             await call.answer("✅ Задание выполнено! Звезды начислены.", show_alert=True)
-            await show_tasks(call) # Возврат к списку
+            # Обновляем сообщение со списком заданий, чтобы выполненное исчезло (или пометилось)
+            await show_tasks(call) 
+            
         else:
-            await call.answer("❌ Вы еще не подписались на этот канал!", show_alert=True)
-    except Exception:
-        await call.answer("⚠️ Ошибка проверки. Возможно, бот не админ в том канале.", show_alert=True)
-
-# --- СИСТЕМА ВЫВОДА СРЕДСТВ ---
-
-@dp.callback_query(F.data.startswith("out_"))
-async def request_out(call: types.CallbackQuery):
-    method = call.data.split("_")[1] # TON, Stars и т.д.
-    user = db.get_user(call.from_user.id)
-    amount = user[1]
-
-    if amount < config.MIN_WITHDRAW:
-        return await call.answer(f"❌ Минимум для вывода: {config.MIN_WITHDRAW} ⭐", show_alert=True)
-
-    # Кнопки для админа (тебя) в личку
-    admin_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-        [
-            types.InlineKeyboardButton(text="✅ Выплачено", callback_data=f"adm_pay_{call.from_user.id}_{amount}"),
-            types.InlineKeyboardButton(text="❌ Отказ", callback_data=f"adm_refuse_{call.from_user.id}")
-        ]
-    ])
-
-    await bot.send_message(
-        config.ADMIN_ID, 
-        f"💰 **ЗАЯВКА НА ВЫВОД**\n"
-        f"👤 Юзер: @{call.from_user.username} (ID: `{call.from_user.id}`)\n"
-        f"💎 Сумма: **{amount} ⭐**\n"
-        f"🏦 Метод: {method.upper()}",
-        reply_markup=admin_kb,
-        parse_mode="Markdown"
-    )
-    await call.answer("✅ Заявка отправлена админу. Ожидайте!", show_alert=True)
-
+            await call.answer("❌ Вы еще не подписались на канал!", show_alert=True)
+            
+    except Exception as e:
+        print(f"Ошибка проверки подписки: {e}")
+        await call.answer("⚠️ Бот не может проверить подписку. Убедитесь, что бот — админ в канале.", show_alert=True)
 
 # --- ОБРАБОТКА РЕШЕНИЙ АДМИНА ПО ВЫПЛАТАМ ---
 
 @dp.callback_query(F.data.startswith("adm_"))
 async def admin_decision(call: types.CallbackQuery):
-    if call.from_user.id != config.ADMIN_ID: return
+    # Приводим к int для надежности
+    if call.from_user.id != int(config.ADMIN_ID): 
+        return await call.answer("У вас нет прав!", show_alert=True)
     
     parts = call.data.split("_")
-    action = parts[1] # pay или refuse
+    action = parts[1]      # pay или refuse
     target_id = int(parts[2])
+    
+    # Пытаемся достать сумму, если она есть в callback_data
+    amount = float(parts[3]) if len(parts) > 3 else 0
 
     if action == "pay":
-        amount = float(parts[3])
-        db.update_balance(target_id, -amount) # Списание баланса (минус сумма)
-        
+        # Деньги уже должны быть списаны при подаче заявки (в handle_all_text)
+        # Поэтому здесь мы просто уведомляем юзера
         try:
             await bot.send_message(target_id, f"✅ Твоя заявка на {amount} ⭐ одобрена! Деньги отправлены.")
-        except: pass
+        except: 
+            pass
         
         await call.message.edit_text(call.message.text + "\n\n**Статус:** ✅ ВЫПЛАЧЕНО", parse_mode="Markdown")
     
     elif action == "refuse":
+        # Если отказ — ВОЗВРАЩАЕМ деньги на баланс, так как они были списаны при заказе
+        if amount > 0:
+            db.update_balance(target_id, amount) 
+            
         try:
-            await bot.send_message(target_id, "❌ Твоя заявка на вывод отклонена. Обратись в поддержку.")
-        except: pass
+            await bot.send_message(target_id, f"❌ Твоя заявка на вывод ({amount} ⭐) отклонена. Деньги возвращены на баланс.")
+        except: 
+            pass
         
         await call.message.edit_text(call.message.text + "\n\n**Статус:** ❌ ОТКАЗАНО", parse_mode="Markdown")
+    
+    await call.answer()
 
 # --- ЕЖЕДНЕВНЫЙ БОНУС (ЧЕК-ИН) ---
 
@@ -395,15 +419,6 @@ async def daily_checkin(call: types.CallbackQuery):
     db.update_checkin(call.from_user.id, new_streak)
     
     await call.message.answer(f"✅ День {new_streak}: Получено {reward} ⭐!", reply_markup=kb.main_menu())
-
-# --- ПРОМОКОДЫ ---
-
-@dp.callback_query(F.data == "promo_activate")
-async def promo_btn_handler(call: types.CallbackQuery):
-    # Включаем режим ожидания кода для этого юзера
-    promo_cache[call.from_user.id] = True
-    await call.message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
-    await call.answer()
 
 # --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
 @dp.callback_query(F.data == "refs")
@@ -446,35 +461,60 @@ async def admin_broadcast_cmd(message: types.Message):
             
     await message.answer(f"✅ Рассылка завершена! Получили: {count} чел.")
 
-# --- ПРОМОКОДЫ: КНОПКА ---
-@dp.message(F.text == "🎫 Промокод")
-async def promo_btn_handler(message: types.Message):
-    promo_cache[message.from_user.id] = True
-    await message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
-    # ВСЁ, ЧТО БЫЛО НИЖЕ ЗДЕСЬ — УДАЛЕНО, так как оно теперь в handle_all_text
-
 # --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
 @dp.callback_query(F.data == "high_reward")
 async def high_reward_tasks(call: types.CallbackQuery):
     await call.answer("🔥 Спец-задания появятся скоро!", show_alert=True)
 
-# --- ВЫВОД: ВЫБОР МЕТОДА ---
-@dp.callback_query(F.data.startswith("meth_"))
-async def choose_method(call: types.CallbackQuery):
-    method = call.data.split("_")[1].upper()
-    withdraw_cache[call.from_user.id] = {'method': method}
-    await call.message.answer(f"✅ Выбрано: {method}.\n\n**Шаг 1:** Введите количество ⭐ для вывода (минимум 200):")
+# --- ПРОМОКОДЫ: ОБРАБОТКА (КНОПКА В МЕНЮ И ИНЛАЙН) ---
+
+# Если нажали кнопку в обычном меню
+@dp.message(F.text == "🎫 Промокод")
+async def promo_menu_handler(message: types.Message):
+    # Сбрасываем кэш вывода, если он был, чтобы не мешал
+    if message.from_user.id in withdraw_cache: del withdraw_cache[message.from_user.id]
+    
+    promo_cache[message.from_user.id] = True
+    await message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
+
+# Если нажали инлайн-кнопку (из профиля или заданий)
+@dp.callback_query(F.data == "promo_activate")
+async def promo_callback_handler(call: types.CallbackQuery):
+    if call.from_user.id in withdraw_cache: del withdraw_cache[call.from_user.id]
+    
+    promo_cache[call.from_user.id] = True
+    await call.message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
     await call.answer()
 
+
+# --- ВЫВОД: ВЫБОР МЕТОДА ---
+
+@dp.callback_query(F.data.startswith("meth_"))
+async def choose_method(call: types.CallbackQuery):
+    # Сбрасываем кэш промокода, если юзер решил вместо него вывести деньги
+    if call.from_user.id in promo_cache: del promo_cache[call.from_user.id]
+    
+    method = call.data.split("_")[1].upper()
+    withdraw_cache[call.from_user.id] = {'method': method}
+    
+    await call.message.answer(
+        f"✅ Выбран метод: **{method}**\n\n"
+        f"**Шаг 1:** Введите количество ⭐ для вывода (минимум 200):",
+        parse_mode="Markdown"
+    )
+    await call.answer()
+
+
 # --- ЕДИНЫЙ ОБРАБОТЧИК ТЕКСТА (ПРОМО + ВЫВОД) ---
+
 @dp.message(F.text, ~F.text.startswith("/"))
 async def handle_all_text(message: types.Message):
     user_id = message.from_user.id
-    text = message.text
+    text = message.text.strip()
 
-    # 1. ЛОГИКА ПРОМОКОДА
+    # 1. Если юзер вводит ПРОМОКОД
     if promo_cache.get(user_id):
-        code = text.upper().strip()
+        code = text.upper()
         promo = db.get_promo(code)
         
         if not promo:
@@ -491,13 +531,14 @@ async def handle_all_text(message: types.Message):
                 db.use_promo(code)
                 await message.answer(f"✅ Успешно! Начислено **{promo[1]} ⭐**", parse_mode="Markdown")
         
-        del promo_cache[user_id]
+        del promo_cache[user_id] # Выключаем режим ввода промокода
         return
 
-    # 2. ЛОГИКА ВЫВОДА
-    if user_id in withdraw_cache:
+    # 2. Если юзер в процессе ВЫВОДА
+    elif user_id in withdraw_cache:
         data = withdraw_cache[user_id]
 
+        # Шаг 1: Ввод суммы
         if 'amount' not in data:
             if not text.isdigit():
                 return await message.answer("❌ Введите число (количество звезд)!")
@@ -511,8 +552,9 @@ async def handle_all_text(message: types.Message):
                 return await message.answer(f"❌ Недостаточно звезд! У вас: {user[1]} ⭐")
             
             withdraw_cache[user_id]['amount'] = amount
-            await message.answer(f"💰 Сумма: {amount} ⭐\n\n**Шаг 2:** Теперь введите реквизиты (кошелек или ID):")
+            await message.answer(f"💰 Сумма: **{amount} ⭐**\n\n**Шаг 2:** Теперь введите реквизиты (кошелек или ID):", parse_mode="Markdown")
 
+        # Шаг 2: Ввод реквизитов и финал
         else:
             method = data['method']
             amount = data['amount']
@@ -520,17 +562,22 @@ async def handle_all_text(message: types.Message):
             admin_text = (
                 f"🚀 **НОВАЯ ЗАЯВКА НА ВЫВОД!**\n\n"
                 f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
-                f"💵 Сумма: {amount} ⭐\n"
-                f"💎 Метод: {method}\n"
+                f"💵 Сумма: **{amount} ⭐**\n"
+                f"💎 Метод: **{method}**\n"
                 f"📝 Реквизиты: `{text}`\n\n"
-                f"Команда: `/give {user_id} -{amount}`"
+                f"Команда для выплаты: `/give {user_id} -{amount}`"
             )
             
             await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
             await message.answer("✅ **Заявка отправлена!**\nОжидайте выплату в течение 24 часов.")
-            del withdraw_cache[user_id]
+            del withdraw_cache[user_id] # Очищаем кэш после отправки
         return
-    
+
+    # 3. Если просто какой-то текст
+    else:
+        await message.answer("❓ Пожалуйста, используйте кнопки меню.")
+
+
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
 
 async def auto_delete_tasks():
