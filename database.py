@@ -71,11 +71,15 @@ def add_user(user_id, ref_id=None):
         return True  # Пользователь успешно добавлен (НОВЫЙ)
     return False     # Пользователь уже существует (СТАРЫЙ)
 
+# Начисление с защитой от минуса
 def update_balance(user_id, amount):
     with get_connection() as conn:
         cur = conn.cursor()
-        # Используем round для красоты баланса
-        cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s", (round(amount, 2), user_id))
+        # Если amount отрицательный (вывод), проверяем, хватает ли баланса
+        if amount < 0:
+            cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s AND balance >= %s", (amount, user_id, abs(amount)))
+        else:
+            cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s", (round(amount, 2), user_id))
         conn.commit()
 
 # --- ФУНКЦИИ ЗАДАНИЙ ---
@@ -135,11 +139,17 @@ def use_promo(code):
         cur.execute("UPDATE promos SET uses_left = uses_left - 1 WHERE code = %s", (code,))
         conn.commit()
 
-def get_refs_count(user_id):
+# Считаем оба уровня рефералов
+def get_detailed_refs(user_id):
     with get_connection() as conn:
         cur = conn.cursor()
+        # Уровень 1
         cur.execute("SELECT COUNT(*) FROM users WHERE ref_id = %s", (user_id,))
-        return cur.fetchone()[0]
+        l1 = cur.fetchone()[0]
+        # Уровень 2
+        cur.execute("SELECT COUNT(*) FROM users WHERE ref_id IN (SELECT id FROM users WHERE ref_id = %s)", (user_id,))
+        l2 = cur.fetchone()[0]
+        return l1, l2
 
 def get_admin_stats():
     with get_connection() as conn:
