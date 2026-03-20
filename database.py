@@ -19,8 +19,8 @@ def init_db():
                         ref_id BIGINT,
                         last_checkin TIMESTAMP,
                         checkin_streak INTEGER DEFAULT 0,
-                        total_ref_earned REAL DEFAULT 0),
-                        ref_bonus_given BOOLEAN DEFAULT FALSE''')
+                        total_ref_earned REAL DEFAULT 0,
+                        ref_bonus_given BOOLEAN DEFAULT FALSE)''')
 
         # 2. Таблица заданий
         cur.execute('''CREATE TABLE IF NOT EXISTS tasks 
