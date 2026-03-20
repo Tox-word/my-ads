@@ -194,23 +194,25 @@ async def cmd_start(message: types.Message, command: CommandObject):
 
     # --- ПУНКТ 2: УВЕДОМЛЕНИЕ ПОСЛЕ ПОДПИСКИ ---
     # Если юзер только что прошел проверку ОП и он новый
-    if is_new:
-        # Здесь можно добавить пометку в базу, что юзер "активирован"
-        # Но для начала просто уведомим реферера
+# --- НАЧИСЛЕНИЕ ЗА РЕФЕРАЛА (Только если он НОВЫЙ и ПОДПИСАЛСЯ) ---
+    if is_new and is_subscribed:
         if ref_id:
+            # Начисляем пригласителю 1 звезду
+            db.update_balance(ref_id, 5.0)
+            
+            # Ищем "дедушку" (L2)
+            parent_data = db.get_user(ref_id)
+            grandpa_id = parent_data[2] if parent_data else None
+            
+            if grandpa_id:
+                # Начисляем дедушке 0.5 звезды
+                db.update_balance(grandpa_id, 1.0)
+
             try:
-                await bot.send_message(
-                    chat_id=ref_id,
-                    text=f"👥 **Новый активный реферал!**\n"
-                         f"Пользователь @{message.from_user.username} подписался на каналы и принес вам бонус!"
-                )
+                # Уведомляем реферера о деньгах
+                await bot.send_message(ref_id, f"👥 У вас новый активный реферал!\n💰 Бонус: +1.0 ⭐ за подписку!")
             except:
                 pass
-
-    await message.answer(
-        f"Привет на ферме! Зарабатывай ⭐ здесь.\nКурс: {config.EXCHANGE_RATE}", 
-        reply_markup=kb.main_menu()
-    )
 
 
 # --- ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ---
@@ -290,7 +292,7 @@ async def check_sub_task(call: types.CallbackQuery):
             
             if parent_id:
                 # Начисляем Папе (L1)
-                reward_l1 = task[3] * 0.15
+                reward_l1 = task[3] * 0.10
                 db.update_balance(parent_id, reward_l1)
                 
                 # Ищем Дедушку (L2)
@@ -299,7 +301,7 @@ async def check_sub_task(call: types.CallbackQuery):
                 
                 if grandpa_id:
                     # Начисляем Дедушке (L2)
-                    reward_l2 = task[3] * 0.10
+                    reward_l2 = task[3] * 0.05
                     db.update_balance(grandpa_id, reward_l2)
             
             await call.answer("✅ Задание выполнено! Звезды начислены.", show_alert=True)
@@ -441,12 +443,21 @@ async def show_refs(call: types.CallbackQuery):
     l1, l2 = db.get_detailed_refs(call.from_user.id)
     link = f"https://t.me/{(await bot.get_me()).username}?start={call.from_user.id}"
     
-    text = (
+text = (
         f"👥 **ВАША КОМАНДА**\n\n"
-        f"🥇 Уровень 1 (+1 ⭐): **{l1}** чел.\n"
-        f"🥈 Уровень 2 (+0.5 ⭐): **{l2}** чел.\n\n"
-        f"🔗 Ссылка:\n`{link}`"
+        f"🥇 **Уровень 1:**\n"
+        f"├ Рефералов: **{l1}** чел.\n"
+        f"└ Бонус: **+5.0 ⭐** за вход + **10%** с заданий\n\n"
+        
+        f"🥈 **Уровень 2:**\n"
+        f"├ Рефералов: **{l2}** чел.\n"
+        f"└ Бонус: **+1.0 ⭐** за вход + **5%** с заданий\n\n"
+        
+        f"🔗 **Ваша ссылка для приглашения:**\n"
+        f"`{link}`\n\n"
+        f"🚀 _Приглашайте друзей и зарабатывайте на их активности!_"
     )
+
     await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
 
 # --- НОВАЯ БЕЗОПАСНАЯ РАССЫЛКА ---
@@ -469,12 +480,6 @@ async def admin_broadcast_cmd(message: types.Message):
             continue
             
     await message.answer(f"✅ Рассылка завершена! Получили: {count} чел.")
-
-# Чтобы бот не реагировал на обычные сообщения:
-@dp.message(F.from_user.id == config.ADMIN_ID, ~F.text.startswith("/"))
-async def ignore_admin_text(message: types.Message):
-    # Просто ничего не делаем или отвечаем эхом, чтобы не было рассылки
-    pass
 
 # --- ДОПОЛНЕНИЕ: ПРОМОКОДЫ ---
 @dp.message(F.text.startswith("/add_promo"), F.from_user.id == config.ADMIN_ID)
@@ -571,6 +576,13 @@ async def process_withdraw_steps(message: types.Message):
         
         # Очищаем кэш для этого юзера
         del withdraw_cache[user_id]
+
+
+# Чтобы бот не реагировал на обычные сообщения:
+@dp.message(F.from_user.id == config.ADMIN_ID, ~F.text.startswith("/"))
+async def ignore_admin_text(message: types.Message):
+    # Просто ничего не делаем или отвечаем эхом, чтобы не было рассылки
+    pass
 
     
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
