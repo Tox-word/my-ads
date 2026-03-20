@@ -12,6 +12,8 @@ def main_menu():
         
         [InlineKeyboardButton(text="📢 Задания на подписку", callback_data="tasks_list")],
         [InlineKeyboardButton(text="🔥 СПЕЦ-ЗАДАНИЯ (ОТ 50 ⭐)", callback_data="high_reward")],
+
+        [InlineKeyboardButton(text="🎫 Промокод", callback_data="promo_activate")],
         
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
          InlineKeyboardButton(text="👥 Рефералы", callback_data="refs")],
