@@ -19,8 +19,9 @@ def init_db():
                         ref_id BIGINT,
                         last_checkin TIMESTAMP,
                         checkin_streak INTEGER DEFAULT 0,
-                        total_ref_earned REAL DEFAULT 0)''')
-        
+                        total_ref_earned REAL DEFAULT 0),
+                        ref_bonus_given BOOLEAN DEFAULT FALSE''')
+
         # 2. Таблица заданий
         cur.execute('''CREATE TABLE IF NOT EXISTS tasks 
                        (id SERIAL PRIMARY KEY, 
@@ -59,7 +60,8 @@ def init_db():
 def get_user(user_id):
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id, balance, ref_id, last_checkin, checkin_streak, total_ref_earned FROM users WHERE id = %s", (user_id,))
+        # Добавили ref_bonus_given в конец списка
+        cur.execute("SELECT id, balance, ref_id, last_checkin, checkin_streak, total_ref_earned, ref_bonus_given FROM users WHERE id = %s", (user_id,))
         return cur.fetchone()
 
 def add_user(user_id, ref_id=None):
@@ -205,3 +207,14 @@ def add_promo_to_db(code, reward, uses, chan_id=None):
             DO UPDATE SET uses_left = EXCLUDED.uses_left, reward = EXCLUDED.reward
         """, (code.upper(), reward, uses, chan_id))
         conn.commit()
+        
+def mark_bonus_given(user_id):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET ref_bonus_given = TRUE WHERE id = %s", (user_id,))
+        conn.commit()
+
+# Теперь функции из main.py будут ссылаться на функции здесь
+is_task_completed = check_task_completed
+complete_task = add_completed_task
+add_promo = add_promo_to_db
