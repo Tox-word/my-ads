@@ -482,35 +482,32 @@ async def ignore_admin_text(message: types.Message):
 @dp.message(F.text.startswith("/add_promo"), F.from_user.id == config.ADMIN_ID)
 async def admin_add_promo(message: types.Message):
     try:
-        # Разбиваем сообщение, игнорируя лишние пробелы
         parts = message.text.split()
         
+        # Проверяем формат: /add_promo КОД НАГРАДА КОЛ_ВО
         if len(parts) < 4:
-            return await message.answer("❌ Формат: `/add_promo КОД КОЛ_ВО НАГРАДА @канал`", parse_mode="Markdown")
+            return await message.answer("❌ Формат: `/add_promo КОД НАГРАДА КОЛ_ВО`", parse_mode="Markdown")
 
-        code = parts[1]
-        uses = int(parts[2])
-        # Обработка награды (замена запятой на точку для float)
-        reward = float(parts[3].replace(",", "."))
-        # Канал — 5-й элемент (если есть)
+        code = parts[1].upper()
+        reward = float(parts[2].replace(",", ".")) # Награда (2-й аргумент)
+        uses = int(parts[3])                       # Кол-во (3-й аргумент)
         channel = parts[4] if len(parts) > 4 else None
         
-        # ВЫЗОВ ТВОЕЙ ФУНКЦИИ (название должно совпадать с database.py)
+        # Теперь всё совпадает с database.py
         db.add_promo_to_db(code, reward, uses, channel)
         
         await message.answer(
-            f"✅ **Промокод готов!**\n\n"
+            f"✅ **Промокод создан!**\n\n"
             f"🎫 Код: `{code}`\n"
             f"💰 Награда: {reward} ⭐\n"
-            f"👥 Лимит: {uses} чел.\n"
-            f"📢 Канал: {channel if channel else 'Нет'}",
+            f"👥 Лимит: {uses} чел.",
             parse_mode="Markdown"
         )
     except ValueError:
-        await message.answer("❌ Ошибка: КОЛ_ВО и НАГРАДА должны быть числами (например: 50 0.5)")
+        await message.answer("❌ Ошибка: Награда и Кол-во должны быть числами!")
     except Exception as e:
         print(f"Ошибка промокода: {e}")
-        await message.answer("⚠️ Что-то пошло не так. Проверь логи или формат команды.")
+        await message.answer(f"⚠️ Ошибка БД: {e}")
 
 
 # --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
@@ -549,8 +546,8 @@ async def process_withdraw_steps(message: types.Message):
         
         if amount < 200:
             return await message.answer("❌ Минимальный вывод — 200 ⭐")
-        if amount > user[2]:
-            return await message.answer(f"❌ Недостаточно звезд! У вас: {user[2]} ⭐")
+        if amount > user[1]:
+            return await message.answer(f"❌ Недостаточно звезд! У вас: {user[1]} ⭐")
         
         withdraw_cache[user_id]['amount'] = amount
         await message.answer(f"💰 Сумма: {amount} ⭐\n\n**Шаг 2:** Теперь введите реквизиты (кошелек или ID):")
