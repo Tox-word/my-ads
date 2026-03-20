@@ -184,11 +184,14 @@ def add_completed_task(user_id, task_id):
         cur.execute("INSERT INTO completed_tasks (user_id, task_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (user_id, str(task_id)))
         conn.commit()
 
-# Функция для создания промокода (у тебя в main.py она называется add_promo)
-def add_promo(code, reward, uses, chan_id):
+# Исправленная функция: название совпадает с вызовом в main.py
+def add_promo_to_db(code, reward, uses, chan_id=None):
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("INSERT INTO promos (code, reward, uses_left, required_channel_id) VALUES (%s, %s, %s, %s) "
-                    "ON CONFLICT (code) DO UPDATE SET uses_left = %s, reward = %s", 
-                    (code.upper(), reward, uses, chan_id, uses, reward))
+        cur.execute("""
+            INSERT INTO promos (code, reward, uses_left, required_channel_id) 
+            VALUES (%s, %s, %s, %s) 
+            ON CONFLICT (code) 
+            DO UPDATE SET uses_left = EXCLUDED.uses_left, reward = EXCLUDED.reward
+        """, (code.upper(), reward, uses, chan_id))
         conn.commit()
