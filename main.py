@@ -16,6 +16,10 @@ from threading import Thread
 # Временное хранилище заявок: {user_id: {'method': 'TON', 'amount': 200}}
 withdraw_cache = {}
 
+# Временное хранилище промокодов
+withdraw_cache = {}
+promo_cache = {} # В начало файла к withdraw_cache
+
 # --- КРУГЛОСУТОЧНАЯ РАБОТА (Keep Alive) ---
 app = Flask('')
 
@@ -478,36 +482,36 @@ async def admin_broadcast_cmd(message: types.Message):
             
     await message.answer(f"✅ Рассылка завершена! Получили: {count} чел.")
 
-# --- ДОПОЛНЕНИЕ: ПРОМОКОДЫ ---
-@dp.message(F.text.startswith("/add_promo"), F.from_user.id == config.ADMIN_ID)
-async def admin_add_promo(message: types.Message):
-    try:
-        parts = message.text.split()
-        
-        # Проверяем формат: /add_promo КОД НАГРАДА КОЛ_ВО
-        if len(parts) < 4:
-            return await message.answer("❌ Формат: `/add_promo КОД НАГРАДА КОЛ_ВО`", parse_mode="Markdown")
+# --- ПРОМОКОДЫ И ВВОД (ОБЪЕДИНЕННЫЙ ХЕНДЛЕР) ---
 
-        code = parts[1].upper()
-        reward = float(parts[2].replace(",", ".")) # Награда (2-й аргумент)
-        uses = int(parts[3])                       # Кол-во (3-й аргумент)
-        channel = parts[4] if len(parts) > 4 else None
-        
-        # Теперь всё совпадает с database.py
-        db.add_promo_to_db(code, reward, uses, channel)
-        
-        await message.answer(
-            f"✅ **Промокод создан!**\n\n"
-            f"🎫 Код: `{code}`\n"
-            f"💰 Награда: {reward} ⭐\n"
-            f"👥 Лимит: {uses} чел.",
-            parse_mode="Markdown"
-        )
-    except ValueError:
-        await message.answer("❌ Ошибка: Награда и Кол-во должны быть числами!")
-    except Exception as e:
-        print(f"Ошибка промокода: {e}")
-        await message.answer(f"⚠️ Ошибка БД: {e}")
+@dp.message(F.text == "🎁 Промокод")
+async def promo_btn_handler(message: types.Message):
+    promo_cache[message.from_user.id] = True
+    await message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
+
+@dp.message(F.text, ~F.text.startswith("/"))
+async def handle_text_inputs(message: types.Message):
+    user_id = message.from_user.id
+    text = message.text
+
+    # 1. ЛОГИКА ПРОМОКОДА
+    if promo_cache.get(user_id):
+        promo = db.get_promo(text.upper().strip())
+        if not promo:
+            await message.answer("❌ Такого промокода не существует.")
+        elif promo[2] <= 0:
+            await message.answer("❌ Этот промокод закончился.")
+        else:
+            p_id = f"p_{text.upper().strip()}"
+            if db.is_task_completed(user_id, p_id):
+                await message.answer("🚫 Вы уже использовали этот код.")
+            else:
+                db.update_balance(user_id, promo[1])
+                db.add_completed_task(user_id, p_id)
+                db.use_promo(text.upper().strip())
+                await message.answer(f"✅ Успешно! Начислено **{promo[1]} ⭐**", parse_mode="Markdown")
+        del promo_cache[user_id]
+        return
 
 
 # --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
@@ -573,13 +577,6 @@ async def process_withdraw_steps(message: types.Message):
         
         # Очищаем кэш для этого юзера
         del withdraw_cache[user_id]
-
-
-# Чтобы бот не реагировал на обычные сообщения:
-@dp.message(F.from_user.id == config.ADMIN_ID, ~F.text.startswith("/"))
-async def ignore_admin_text(message: types.Message):
-    # Просто ничего не делаем или отвечаем эхом, чтобы не было рассылки
-    pass
 
     
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
