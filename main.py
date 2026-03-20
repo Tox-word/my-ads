@@ -357,45 +357,6 @@ async def check_sub_task(call: types.CallbackQuery):
         print(f"Ошибка проверки подписки: {e}")
         await call.answer("⚠️ Бот не может проверить подписку. Убедитесь, что бот — админ в канале.", show_alert=True)
 
-# --- ОБРАБОТКА РЕШЕНИЙ АДМИНА ПО ВЫПЛАТАМ ---
-
-@dp.callback_query(F.data.startswith("adm_"))
-async def admin_decision(call: types.CallbackQuery):
-    # Приводим к int для надежности
-    if call.from_user.id != int(config.ADMIN_ID): 
-        return await call.answer("У вас нет прав!", show_alert=True)
-    
-    parts = call.data.split("_")
-    action = parts[1]      # pay или refuse
-    target_id = int(parts[2])
-    
-    # Пытаемся достать сумму, если она есть в callback_data
-    amount = float(parts[3]) if len(parts) > 3 else 0
-
-    if action == "pay":
-        # Деньги уже должны быть списаны при подаче заявки (в handle_all_text)
-        # Поэтому здесь мы просто уведомляем юзера
-        try:
-            await bot.send_message(target_id, f"✅ Твоя заявка на {amount} ⭐ одобрена! Деньги отправлены.")
-        except: 
-            pass
-        
-        await call.message.edit_text(call.message.text + "\n\n**Статус:** ✅ ВЫПЛАЧЕНО", parse_mode="Markdown")
-    
-    elif action == "refuse":
-        # Если отказ — ВОЗВРАЩАЕМ деньги на баланс, так как они были списаны при заказе
-        if amount > 0:
-            db.update_balance(target_id, amount) 
-            
-        try:
-            await bot.send_message(target_id, f"❌ Твоя заявка на вывод ({amount} ⭐) отклонена. Деньги возвращены на баланс.")
-        except: 
-            pass
-        
-        await call.message.edit_text(call.message.text + "\n\n**Статус:** ❌ ОТКАЗАНО", parse_mode="Markdown")
-    
-    await call.answer()
-
 # --- ЕЖЕДНЕВНЫЙ БОНУС (ЧЕК-ИН) ---
 
 @dp.callback_query(F.data == "daily_bonus")
@@ -511,12 +472,14 @@ async def choose_method(call: types.CallbackQuery):
 async def handle_all_text(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
+    user_data = db.get_user(user_id) # Получаем данные из БД
 
-    # 1. Если юзер вводит ПРОМОКОД
+    if not user_data: return
+
+    # 1. Если юзер вводит ПРОМОКОД (оставляем твою логику)
     if promo_cache.get(user_id):
         code = text.upper()
         promo = db.get_promo(code)
-        
         if not promo:
             await message.answer("❌ Такого промокода не существует.")
         elif promo[2] <= 0:
@@ -530,53 +493,132 @@ async def handle_all_text(message: types.Message):
                 db.add_completed_task(user_id, p_id)
                 db.use_promo(code)
                 await message.answer(f"✅ Успешно! Начислено **{promo[1]} ⭐**", parse_mode="Markdown")
-        
-        del promo_cache[user_id] # Выключаем режим ввода промокода
+        promo_cache.pop(user_id, None)
         return
 
     # 2. Если юзер в процессе ВЫВОДА
     elif user_id in withdraw_cache:
         data = withdraw_cache[user_id]
 
-        # Шаг 1: Ввод суммы
-        if 'amount' not in data:
+        if 'amount' not in data: # ШАГ 1: СУММА
             if not text.isdigit():
-                return await message.answer("❌ Введите число (количество звезд)!")
+                return await message.answer("❌ Введите число!")
             
             amount = int(text)
-            user = db.get_user(user_id)
-            
             if amount < 200:
-                return await message.answer("❌ Минимальный вывод — 200 ⭐")
-            if amount > user[1]:
-                return await message.answer(f"❌ Недостаточно звезд! У вас: {user[1]} ⭐")
+                return await message.answer("❌ Минимум 200 ⭐")
+            if amount > user_data[1]: # Баланс из БД
+                return await message.answer(f"❌ Недостаточно звезд! У вас: {user_data[1]} ⭐")
             
             withdraw_cache[user_id]['amount'] = amount
-            await message.answer(f"💰 Сумма: **{amount} ⭐**\n\n**Шаг 2:** Теперь введите реквизиты (кошелек или ID):", parse_mode="Markdown")
+            await message.answer(f"💰 Сумма: **{amount} ⭐**\n\n**Шаг 2:** Введите реквизиты:", parse_mode="Markdown")
 
-        # Шаг 2: Ввод реквизитов и финал
-        else:
+        else: # ШАГ 2: РЕКВИЗИТЫ И ФИНАЛ
             method = data['method']
             amount = data['amount']
             
+            # --- ГЛАВНЫЕ ИЗМЕНЕНИЯ ТУТ ---
+            db.update_balance(user_id, -amount) # СПИСЫВАЕМ СРАЗУ (с минусом)
+
+            # Кнопки для админа (тебя)
+            admin_kb = types.InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(text="✅ Выплатить", callback_data=f"adm_pay_{user_id}_{amount}"),
+                    types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_refuse_{user_id}_{amount}")
+                ]
+            ])
+
             admin_text = (
-                f"🚀 **НОВАЯ ЗАЯВКА НА ВЫВОД!**\n\n"
+                f"🚀 **НОВАЯ ЗАЯВКА!**\n\n"
                 f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
                 f"💵 Сумма: **{amount} ⭐**\n"
-                f"💎 Метод: **{method}**\n"
-                f"📝 Реквизиты: `{text}`\n\n"
-                f"Команда для выплаты: `/give {user_id} -{amount}`"
+                f"📝 Реквизиты: `{text}`\n"
             )
             
-            await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
-            await message.answer("✅ **Заявка отправлена!**\nОжидайте выплату в течение 24 часов.")
-            del withdraw_cache[user_id] # Очищаем кэш после отправки
+            await bot.send_message(config.ADMIN_ID, admin_text, reply_markup=admin_kb, parse_mode="Markdown")
+            await message.answer("✅ **Заявка отправлена!**\nЗвезды списаны. Ожидайте выплату.")
+            withdraw_cache.pop(user_id, None)
         return
 
-    # 3. Если просто какой-то текст
     else:
         await message.answer("❓ Пожалуйста, используйте кнопки меню.")
+        
+# --- ОБРАБОТКА РЕШЕНИЙ АДМИНА ПО ВЫПЛАТАМ ---
 
+@dp.message(F.text, ~F.text.startswith("/"))
+async def handle_all_text(message: types.Message):
+    user_id = message.from_user.id
+    text = message.text.strip()
+    user_data = db.get_user(user_id) # Получаем данные из БД
+
+    if not user_data: return
+
+    # 1. Если юзер вводит ПРОМОКОД (оставляем твою логику)
+    if promo_cache.get(user_id):
+        code = text.upper()
+        promo = db.get_promo(code)
+        if not promo:
+            await message.answer("❌ Такого промокода не существует.")
+        elif promo[2] <= 0:
+            await message.answer("❌ Этот промокод закончился.")
+        else:
+            p_id = f"p_{code}"
+            if db.is_task_completed(user_id, p_id):
+                await message.answer("🚫 Вы уже использовали этот код.")
+            else:
+                db.update_balance(user_id, promo[1])
+                db.add_completed_task(user_id, p_id)
+                db.use_promo(code)
+                await message.answer(f"✅ Успешно! Начислено **{promo[1]} ⭐**", parse_mode="Markdown")
+        promo_cache.pop(user_id, None)
+        return
+
+    # 2. Если юзер в процессе ВЫВОДА
+    elif user_id in withdraw_cache:
+        data = withdraw_cache[user_id]
+
+        if 'amount' not in data: # ШАГ 1: СУММА
+            if not text.isdigit():
+                return await message.answer("❌ Введите число!")
+            
+            amount = int(text)
+            if amount < 200:
+                return await message.answer("❌ Минимум 200 ⭐")
+            if amount > user_data[1]: # Баланс из БД
+                return await message.answer(f"❌ Недостаточно звезд! У вас: {user_data[1]} ⭐")
+            
+            withdraw_cache[user_id]['amount'] = amount
+            await message.answer(f"💰 Сумма: **{amount} ⭐**\n\n**Шаг 2:** Введите реквизиты:", parse_mode="Markdown")
+
+        else: # ШАГ 2: РЕКВИЗИТЫ И ФИНАЛ
+            method = data['method']
+            amount = data['amount']
+            
+            # --- ГЛАВНЫЕ ИЗМЕНЕНИЯ ТУТ ---
+            db.update_balance(user_id, -amount) # СПИСЫВАЕМ СРАЗУ (с минусом)
+
+            # Кнопки для админа (тебя)
+            admin_kb = types.InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    types.InlineKeyboardButton(text="✅ Выплатить", callback_data=f"adm_pay_{user_id}_{amount}"),
+                    types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_refuse_{user_id}_{amount}")
+                ]
+            ])
+
+            admin_text = (
+                f"🚀 **НОВАЯ ЗАЯВКА!**\n\n"
+                f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
+                f"💵 Сумма: **{amount} ⭐**\n"
+                f"📝 Реквизиты: `{text}`\n"
+            )
+            
+            await bot.send_message(config.ADMIN_ID, admin_text, reply_markup=admin_kb, parse_mode="Markdown")
+            await message.answer("✅ **Заявка отправлена!**\nЗвезды списаны. Ожидайте выплату.")
+            withdraw_cache.pop(user_id, None)
+        return
+
+    else:
+        await message.answer("❓ Пожалуйста, используйте кнопки меню.")
 
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
 
