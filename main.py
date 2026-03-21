@@ -23,6 +23,20 @@ class WithdrawState(StatesGroup):
 # Временное хранилище для промокодов (оставляем простым)
 promo_cache = {} 
 
+async def main():
+    # --- ПРОВЕРКА И ОБНОВЛЕНИЕ СТРУКТУРЫ БД ---
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        try:
+            # Пытаемся добавить колонку, если её нет
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_bonus_given BOOLEAN DEFAULT FALSE")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_ref_earned REAL DEFAULT 0")
+            conn.commit()
+            print("✅ База данных проверена и обновлена")
+        except Exception as e:
+            print(f"⚠️ Ошибка при обновлении таблиц: {e}")
+            conn.rollback()
+
 # --- KEEP ALIVE (Для Render) ---
 app = Flask('')
 @app.route('/')
