@@ -23,6 +23,26 @@ class WithdrawState(StatesGroup):
 # Временное хранилище для промокодов (оставляем простым)
 promo_cache = {} 
 
+
+async def main():
+    # --- БЛОК ОЧИСТКИ БАЗЫ (УДАЛИТЬ ПОСЛЕ ПЕРВОГО ЗАПУСКА) ---
+    with db.get_connection() as conn:
+        cur = conn.cursor()
+        try:
+            print("⏳ Начинаю полную очистку базы данных...")
+            # Удаляем все таблицы, учитывая связи (CASCADE)
+            cur.execute("DROP TABLE IF EXISTS users, tasks, completed_tasks, withdrawals, promos CASCADE")
+            conn.commit()
+            print("🗑 Все таблицы удалены.")
+            
+            # Сразу вызываем инициализацию новых таблиц
+            db.init_db()
+            print("✅ База данных успешно пересоздана с нуля!")
+        except Exception as e:
+            print(f"❌ Ошибка при очистке: {e}")
+            conn.rollback()
+    # --- КОНЕЦ БЛОКА ОЧИСТКИ ---
+
 async def main():
     # --- ПРОВЕРКА И ОБНОВЛЕНИЕ СТРУКТУРЫ БД ---
     with db.get_connection() as conn:
