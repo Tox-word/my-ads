@@ -180,34 +180,41 @@ async def admin_panel(message: types.Message):
 # --- ОБРАБОТКА КОМАНДЫ /START ---
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, command: CommandObject):
-    # 1. Анти-фрод (Проверка аватара/юзернейма)
     bad_msg = await is_bad_user(message)
-    if bad_msg:
-        return await message.answer(bad_msg)
+    if bad_msg: return await message.answer(bad_msg)
     
     user_id = message.from_user.id
-    
-    # Получаем данные юзера из базы ДО регистрации
     existing_user = db.get_user(user_id)
     
-    # 2. Логика реферальной ссылки
     ref_id = None
     if not existing_user and command.args and command.args.isdigit():
         if int(command.args) != user_id:
             ref_id = int(command.args)
     
-    # Регистрация (Функция должна возвращать True если юзер реально новый)
-    is_new = db.add_user(user_id, ref_id)
-    
-    # 3. Проверка обязательной подписки (ОП)
+    db.add_user(user_id, ref_id)
     is_subscribed = await check_main_subs(user_id)
     
     if not is_subscribed:
         channels_str = "\n".join(config.REQUIRED_CHANNELS)
-        return await message.answer(
-            f"❌ Для работы с ботом подпишись на каналы:\n{channels_str}\n\n"
-            f"После подписки снова нажми /start"
-        )
+        return await message.answer(f"❌ Подпишись на каналы:\n{channels_str}\n\nПотом снова жми /start")
+
+    # НАЧИСЛЕНИЕ РЕФЕРАЛКИ
+    user_data = db.get_user(user_id)
+    if user_data and len(user_data) >= 7:
+        bonus_already_given = user_data[6]
+        if not bonus_already_given:
+            actual_ref_id = user_data[2]
+            if actual_ref_id:
+                db.update_balance(actual_ref_id, 5.0)
+                parent_data = db.get_user(actual_ref_id)
+                if parent_data and parent_data[2]:
+                    db.update_balance(parent_data[2], 1.0)
+                try:
+                    await bot.send_message(actual_ref_id, "👥 **Новый реферал!** +5.0 ⭐", parse_mode="Markdown")
+                except: pass
+            db.mark_bonus_given(user_id)
+
+    await message.answer(f"✅ Добро пожаловать!", reply_markup=kb.main_menu())
 
 # --- НАЧИСЛЕНИЕ ЗА РЕФЕРАЛА (ВСТАВЛЯТЬ СЮДА) ---
     
@@ -472,76 +479,50 @@ async def choose_method(call: types.CallbackQuery):
 async def handle_all_text(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
-    user_data = db.get_user(user_id) # Получаем данные из БД
-
+    user_data = db.get_user(user_id)
     if not user_data: return
 
-    # 1. Если юзер вводит ПРОМОКОД (оставляем твою логику)
+    # ПРОМОКОДЫ
     if promo_cache.get(user_id):
         code = text.upper()
         promo = db.get_promo(code)
         if not promo:
-            await message.answer("❌ Такого промокода не существует.")
+            await message.answer("❌ Нет такого кода.")
         elif promo[2] <= 0:
-            await message.answer("❌ Этот промокод закончился.")
+            await message.answer("❌ Код закончился.")
         else:
-            p_id = f"p_{code}"
-            if db.is_task_completed(user_id, p_id):
-                await message.answer("🚫 Вы уже использовали этот код.")
+            if db.is_task_completed(user_id, f"p_{code}"):
+                await message.answer("🚫 Уже использовано.")
             else:
                 db.update_balance(user_id, promo[1])
-                db.add_completed_task(user_id, p_id)
+                db.add_completed_task(user_id, f"p_{code}")
                 db.use_promo(code)
-                await message.answer(f"✅ Успешно! Начислено **{promo[1]} ⭐**", parse_mode="Markdown")
+                await message.answer(f"✅ +{promo[1]} ⭐")
         promo_cache.pop(user_id, None)
         return
 
-    # 2. Если юзер в процессе ВЫВОДА
+    # ВЫВОД
     elif user_id in withdraw_cache:
         data = withdraw_cache[user_id]
-
-        if 'amount' not in data: # ШАГ 1: СУММА
-            if not text.isdigit():
-                return await message.answer("❌ Введите число!")
-            
+        if 'amount' not in data:
+            if not text.isdigit(): return await message.answer("❌ Введи число!")
             amount = int(text)
-            if amount < 200:
-                return await message.answer("❌ Минимум 200 ⭐")
-            if amount > user_data[1]: # Баланс из БД
-                return await message.answer(f"❌ Недостаточно звезд! У вас: {user_data[1]} ⭐")
-            
+            if amount < 200 or amount > user_data[1]:
+                return await message.answer("❌ Ошибка суммы или баланса.")
             withdraw_cache[user_id]['amount'] = amount
-            await message.answer(f"💰 Сумма: **{amount} ⭐**\n\n**Шаг 2:** Введите реквизиты:", parse_mode="Markdown")
-
-        else: # ШАГ 2: РЕКВИЗИТЫ И ФИНАЛ
-            method = data['method']
+            await message.answer("💳 Введи реквизиты:")
+        else:
             amount = data['amount']
-            
-            # --- ГЛАВНЫЕ ИЗМЕНЕНИЯ ТУТ ---
-            db.update_balance(user_id, -amount) # СПИСЫВАЕМ СРАЗУ (с минусом)
-
-            # Кнопки для админа (тебя)
-            admin_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    types.InlineKeyboardButton(text="✅ Выплатить", callback_data=f"adm_pay_{user_id}_{amount}"),
-                    types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_refuse_{user_id}_{amount}")
-                ]
-            ])
-
-            admin_text = (
-                f"🚀 **НОВАЯ ЗАЯВКА!**\n\n"
-                f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
-                f"💵 Сумма: **{amount} ⭐**\n"
-                f"📝 Реквизиты: `{text}`\n"
-            )
-            
-            await bot.send_message(config.ADMIN_ID, admin_text, reply_markup=admin_kb, parse_mode="Markdown")
-            await message.answer("✅ **Заявка отправлена!**\nЗвезды списаны. Ожидайте выплату.")
+            db.update_balance(user_id, -amount)
+            admin_kb = types.InlineKeyboardMarkup(inline_keyboard=[[
+                types.InlineKeyboardButton(text="✅ Ок", callback_data=f"adm_pay_{user_id}_{amount}"),
+                types.InlineKeyboardButton(text="❌ Отказ", callback_data=f"adm_refuse_{user_id}_{amount}")
+            ]])
+            await bot.send_message(config.ADMIN_ID, f"🚀 Вывод {amount} ⭐ от {user_id}\nРеквизиты: {text}", reply_markup=admin_kb)
+            await message.answer("✅ Заявка отправлена!")
             withdraw_cache.pop(user_id, None)
-        return
-
     else:
-        await message.answer("❓ Пожалуйста, используйте кнопки меню.")
+        await message.answer("❓ Используй меню.")
         
 # --- ОБРАБОТКА РЕШЕНИЙ АДМИНА ПО ВЫПЛАТАМ ---
 
@@ -619,6 +600,24 @@ async def handle_all_text(message: types.Message):
 
     else:
         await message.answer("❓ Пожалуйста, используйте кнопки меню.")
+
+
+@dp.callback_query(F.data.startswith("adm_"))
+async def admin_decision(call: types.CallbackQuery):
+    if call.from_user.id != int(config.ADMIN_ID): return
+    parts = call.data.split("_")
+    action, target_id, amount = parts[1], int(parts[2]), float(parts[3])
+
+    if action == "pay":
+        try: await bot.send_message(target_id, f"✅ Выплата {amount} ⭐ одобрена!")
+        except: pass
+        await call.message.edit_text(call.message.text + "\n✅ ВЫПЛАЧЕНО")
+    elif action == "refuse":
+        db.update_balance(target_id, amount) # ВОЗВРАТ
+        try: await bot.send_message(target_id, f"❌ Вывод {amount} ⭐ отклонен, возврат.")
+        except: pass
+        await call.message.edit_text(call.message.text + "\n❌ ОТКАЗАНО")
+    await call.answer()
 
 # --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
 
