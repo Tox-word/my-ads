@@ -3,8 +3,10 @@ import os
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import CommandStart, Command, CommandObject
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import CommandStart, Command, CommandObject, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
 import config
 import database as db
@@ -13,21 +15,20 @@ import kb
 from flask import Flask
 from threading import Thread
 
-# Временное хранилище заявок: {user_id: {'method': 'TON', 'amount': 200}}
-withdraw_cache = {}
+# --- СОСТОЯНИЯ (Решает конфликт Промо/Вывод) ---
+class WithdrawState(StatesGroup):
+    wait_amount = State()   # Ждем ввода суммы
+    wait_details = State()  # Ждем ввода реквизитов
 
-# Временное хранилище промокодов
-promo_cache = {} # В начало файла к withdraw_cache
+# Временное хранилище для промокодов (оставляем простым)
+promo_cache = {} 
 
-# --- КРУГЛОСУТОЧНАЯ РАБОТА (Keep Alive) ---
+# --- KEEP ALIVE (Для Render) ---
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "Money Farm is running!"
+def home(): return "Money Farm is running!"
 
-def run():
-    app.run(host='0.0.0.0', port=8080)
+def run(): app.run(host='0.0.0.0', port=8080)
 
 def keep_alive():
     t = Thread(target=run)
@@ -36,12 +37,13 @@ def keep_alive():
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=config.BOT_TOKEN)
-dp = Dispatcher()
+# MemoryStorage нужен для работы состояний (FSM)
+dp = Dispatcher(storage=MemoryStorage())
 
 # --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 async def check_main_subs(user_id: int):
-    """Проверка обязательных каналов из конфига"""
+    """Проверка обязательных каналов из config.py"""
     if user_id == config.ADMIN_ID:
         return True
     for channel in config.REQUIRED_CHANNELS:
@@ -56,6 +58,10 @@ async def check_main_subs(user_id: int):
 async def is_bad_user(message: types.Message):
     """Анти-фрод: проверка аватарки и юзернейма"""
     try:
+        # У админа не проверяем
+        if message.from_user.id == config.ADMIN_ID:
+            return None
+            
         photos = await bot.get_user_profile_photos(message.from_user.id)
         if photos.total_count == 0:
             return "❌ Ошибка: У вас нет фото профиля. Бот работает только с реальными аккаунтами."
@@ -66,216 +72,88 @@ async def is_bad_user(message: types.Message):
         return "⚠️ Ошибка проверки аккаунта."
     return None
 
-# --- АДМИН-КОМАНДЫ (УПРАВЛЕНИЕ ЗАДАНИЯМИ) ---
-
-# 1. Добавление задания
-@dp.message(F.text.startswith("/add "), F.from_user.id == config.ADMIN_ID)
-async def admin_add_task(message: types.Message):
-    try:
-        # Формат: /add Название Ссылка Награда @юзернейм Часы
-        parts = message.text.split(" ")
-        title = parts[1]
-        url = parts[2]
-        reward = float(parts[3])
-        chat_id = parts[4]
-        hours = int(parts[5])
-        
-        expire_time = datetime.now() + timedelta(hours=hours)
-        db.add_task(title, url, reward, chat_id, expire_time) 
-        
-        await message.answer(f"✅ Задание **'{title}'** добавлено!\n🕒 Истекает через: {hours} ч.\n💰 Награда: {reward} ⭐", parse_mode="Markdown")
-    except Exception as e:
-        await message.answer("❌ Ошибка! Формат: `/add Название Ссылка Награда @юзернейм ЧАСЫ`", parse_mode="Markdown")
-
-# 2. Удаление задания по ID
-@dp.message(F.text.startswith("/del "), F.from_user.id == config.ADMIN_ID)
-async def admin_del_task(message: types.Message):
-    try:
-        task_id = int(message.text.split(" ")[1])
-        db.delete_task(task_id)
-        await message.answer(f"🗑 Задание ID `{task_id}` удалено из базы.", parse_mode="Markdown")
-    except:
-        await message.answer("❌ Ошибка! Формат: `/del ID_задания`", parse_mode="Markdown")
-
-# 3. Список всех заданий (для админа)
-@dp.message(F.text == "/tasks", F.from_user.id == config.ADMIN_ID)
-@dp.callback_query(F.data == "adm_tasks_list") # Добавляем обработку кнопки из админки
-async def admin_list_tasks(event: types.Message | types.CallbackQuery):
-    # Если это кнопка — берем message из call, если команда — само сообщение
-    message = event if isinstance(event, types.Message) else event.message
-    
-    tasks = db.get_all_tasks()
-    if not tasks:
-        text = "📭 Список активных заданий пуст."
-    else:
-        text = "📋 **СПИСОК ВСЕХ ЗАДАНИЙ:**\n\n"
-        for t in tasks:
-            # t[0]-ID, t[1]-title, t[3]-reward
-            text += f"🔹 ID: `{t[0]}` | {t[1]} ({t[3]} ⭐)\n"
-        text += "\nУдалить: `/del ID`"
-    
-    # Если это кнопка, лучше редактировать текст, а не слать новый
-    if isinstance(event, types.CallbackQuery):
-        await message.edit_text(text, parse_mode="Markdown", reply_markup=kb.admin_panel_kb())
-        await event.answer()
-    else:
-        await message.answer(text, parse_mode="Markdown")
-        
-@dp.message(Command("add_promo"), F.from_user.id == config.ADMIN_ID)
-async def admin_add_promo(message: types.Message, command: CommandObject):
-    try:
-        # Формат: /add_promo КОД СУММА КОЛ-ВО
-        args = command.args.split()
-        code = args[0].upper()
-        reward = float(args[1])
-        uses = int(args[2])
-        
-        db.add_promo(code, reward, uses) # Убедись, что в database.py есть эта функция
-        await message.answer(f"✅ Промокод `{code}` на {reward} ⭐ создан! (Лимит: {uses})")
-    except:
-        await message.answer("❌ Ошибка! Пиши: `/add_promo СЕКРЕТ 50 100`")
-
-# --- УПРАВЛЕНИЕ БАЛАНСОМ (РУЧНОЕ) ---
-
-@dp.message(F.text.startswith("/give "), F.from_user.id == config.ADMIN_ID)
-async def admin_give_stars(message: types.Message):
-    try:
-        # Формат: /give ID_юзера Количество
-        parts = message.text.split(" ")
-        target_id = int(parts[1])
-        amount = float(parts[2])
-        
-        db.update_balance(target_id, amount)
-        
-        await message.answer(f"✅ Успешно! Начислено {amount} ⭐ пользователю `{target_id}`")
-        # Уведомление пользователю
+# --- ФУНКЦИЯ ФОНОВОЙ ОЧИСТКИ ЗАДАНИЙ ---
+async def auto_delete_tasks():
+    while True:
         try:
-            await bot.send_message(target_id, f"🎁 Админ начислил вам бонус: {amount} ⭐!")
+            db.delete_expired_tasks()
         except:
-            pass 
-    except:
-        await message.answer("❌ Ошибка! Формат: `/give ID количество`", parse_mode="Markdown")
-
-# --- ПАНЕЛЬ УПРАВЛЕНИЯ (ТОЛЬКО ДЛЯ ТЕБЯ) ---
-@dp.message(F.text == "/admin", F.from_user.id == config.ADMIN_ID)
-async def admin_panel(message: types.Message):
-    # Берем данные через новые функции базы (Postgres)
-    stats = db.get_admin_stats() # Должна возвращать (users, balance, tasks, withdraws)
-    
-    stats_text = (
-        f"🖥 **АДМИН-ПАНЕЛЬ**\n\n"
-        f"👥 Всего юзеров: {stats['users_count']}\n"
-        f"💰 Звезд в системе: {round(stats['total_balance'], 2)} ⭐\n"
-        f"📢 Активных заданий: {stats['tasks_count']}\n"
-        f"⏳ Ожидает вывода: {stats['pending_withdraws']}\n"
-    )
-    
-    admin_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="📋 Список заданий", callback_data="adm_tasks_list")],
-        [types.InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="adm_broadcast")]
-    ])
-    
-    await message.answer(stats_text, reply_markup=admin_kb, parse_mode="Markdown")
+            pass
+        await asyncio.sleep(600) # Проверка каждые 10 минут
 
 # --- ОБРАБОТКА КОМАНДЫ /START ---
+
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, command: CommandObject):
     try:
-        # 1. Анти-фрод
+        # 1. Анти-фрод (Проверка аватара/юзернейма)
         bad_msg = await is_bad_user(message)
         if bad_msg:
             return await message.answer(bad_msg)
         
         user_id = message.from_user.id
-        
-        # 2. Регистрация
         existing_user = db.get_user(user_id)
+        
+        # 2. Логика реферала (только если юзер НОВЫЙ)
         ref_id = None
         if not existing_user and command.args and command.args.isdigit():
             if int(command.args) != user_id:
                 ref_id = int(command.args)
         
+        # Регистрация в базе данных
         db.add_user(user_id, ref_id)
         
-        # 3. Проверка подписки
+        # 3. Проверка обязательной подписки (ОП)
         is_subscribed = await check_main_subs(user_id)
+        
         if not is_subscribed:
             channels_str = "\n".join(config.REQUIRED_CHANNELS)
             return await message.answer(
-                f"❌ Для работы с ботом подпишись на каналы:\n{channels_str}\n\n"
-                f"После подписки снова нажми /start"
+                f"❌ **Для работы с ботом подпишись на каналы:**\n\n{channels_str}\n\n"
+                f"После подписки снова нажми /start",
+                parse_mode="Markdown"
             )
 
-        # 4. Начисление рефералки (Безопасный метод)
+        # 4. НАЧИСЛЕНИЕ ЗА РЕФЕРАЛА (Только после подписки!)
         user_data = db.get_user(user_id)
-        # Проверяем длину списка, чтобы не было ошибки IndexError
+        # Проверяем 7-ю колонку (ref_bonus_given), индекс [6]
         if user_data and len(user_data) > 6:
             bonus_already_given = user_data[6]
+            
             if not bonus_already_given:
-                actual_ref_id = user_data[2] # ID пригласившего
+                actual_ref_id = user_data[2] # Кто пригласил
                 
                 if actual_ref_id:
-                    db.update_balance(actual_ref_id, 5.0) # Папе
+                    # Начисляем Папе (L1) - 5 звезд
+                    db.update_balance(actual_ref_id, 5.0)
                     
-                    # Дедушке (L2)
+                    # Ищем Дедушку (L2) - 1 звезда
                     parent_data = db.get_user(actual_ref_id)
                     if parent_data and len(parent_data) > 2 and parent_data[2]:
                         db.update_balance(parent_data[2], 1.0)
                     
+                    # Уведомляем пригласившего
                     try:
-                        await bot.send_message(actual_ref_id, "👥 **Новый активный реферал!**\n💰 +5.0 ⭐", parse_mode="Markdown")
+                        await bot.send_message(
+                            actual_ref_id, 
+                            "👥 **Новый активный реферал!**\n💰 Начислено: **5.0 ⭐**", 
+                            parse_mode="Markdown"
+                        )
                     except: pass
                 
+                # Помечаем, что бонус за этого юзера выдан (больше не платим)
                 db.mark_bonus_given(user_id)
 
-        # 5. Приветствие
+        # 5. Главное меню
         await message.answer(
-            f"✅ Добро пожаловать в **Money Farm**!\nЗарабатывай звезды, выполняя задания.", 
+            f"✅ **Доступ разрешен!**\n\nДобро пожаловать в Money Farm. Выполняй задания и зарабатывай звезды!", 
             reply_markup=kb.main_menu(), 
             parse_mode="Markdown"
         )
 
     except Exception as e:
-        print(f"КРИТИЧЕСКАЯ ОШИБКА В /START: {e}")
-        await message.answer("⚠️ Произошла ошибка при запуске. Попробуйте позже или напишите админу.")
-
-# --- НАЧИСЛЕНИЕ ЗА РЕФЕРАЛА (ВСТАВЛЯТЬ СЮДА) ---
-    
-    # 1. Получаем свежие данные юзера из базы
-    user_data = db.get_user(user_id)
-    # ПРОВЕРЬ ИНДЕКС: если в таблице users колонка ref_bonus_given 
-    # идет шестой по счету, то индекс будет [5]
-    bonus_already_given = user_data[6] if user_data else True 
-
-    # 2. Проверяем: подписан ли он И не давали ли мы за него бонус ранее
-    if is_subscribed and not bonus_already_given:
-        # Достаем того, кто его пригласил
-        actual_ref_id = user_data[2] if user_data else None
-        
-        if actual_ref_id:
-            # Начисляем Папе (L1)
-            db.update_balance(actual_ref_id, 5.0)
-            
-            # Ищем Дедушку (L2)
-            parent_data = db.get_user(actual_ref_id)
-            if parent_data and parent_data[2]:
-                db.update_balance(parent_data[2], 1.0)
-            
-            # Уведомляем Папу
-            try:
-                await bot.send_message(
-                    actual_ref_id, 
-                    "👥 **У вас новый активный реферал!**\n💰 Вам начислено: **5.0 ⭐**", 
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-        
-        # СТАВИМ ГАЛОЧКУ: бонус за этого юзера выдан, больше не платим
-        db.mark_bonus_given(user_id)
-
-    # 4. Финальный ответ: Главное меню
-    await message.answer(f"✅ Подписка подтверждена! Добро пожаловать в Money Farm!", reply_markup=kb.main_menu())
+        print(f"Ошибка в /start: {e}")
+        await message.answer("⚠️ Ошибка при запуске. Попробуй позже.")
 
 # --- ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ---
 @dp.callback_query(F.data == "profile")
@@ -283,24 +161,31 @@ async def profile(call: types.CallbackQuery):
     if not await check_main_subs(call.from_user.id):
         return await call.answer("❌ Сначала подпишись на каналы!", show_alert=True)
         
-    user = db.get_user(call.from_user.id) # Возвращает [id, balance, ref_id...]
-    balance = user[1]
+    user = db.get_user(call.from_user.id) 
+    # Индекс [1] — это баланс в таблице users
+    balance = user[1] if user else 0
     
-    # Пересчет в доллары (твой старый курс 0.015)
+    # Конвертация для красоты (курс из твоего конфига)
     usd_val = round(balance * 0.015, 2)
     
-    text = f"👤 **ПРОФИЛЬ**\n\n💰 Баланс: {balance} ⭐\n💵 Примерно: {usd_val}$"
+    text = (
+        f"👤 **ПРОФИЛЬ**\n\n"
+        f"💰 Баланс: **{balance} ⭐**\n"
+        f"💵 Примерно: **{usd_val}$**\n"
+    )
     
+    # Если баланс позволяет вывести — показываем методы вывода
     if balance >= config.MIN_WITHDRAW:
-        await call.message.edit_text(text, reply_markup=kb.withdraw_currency_kb())
+        await call.message.edit_text(text + "\n✅ Вывод доступен!", reply_markup=kb.withdraw_currency_kb())
     else:
+        # Если мало — просто профиль с кнопкой главного меню
         await call.message.edit_text(
-            text + f"\n\nДо вывода нужно еще {config.MIN_WITHDRAW - balance} ⭐", 
-            reply_markup=kb.main_menu()
+            text + f"\n❌ Минимум для вывода: **{config.MIN_WITHDRAW} ⭐**", 
+            reply_markup=kb.main_menu(),
+            parse_mode="Markdown"
         )
 
-# --- ЛОГИКА ЗАДАНИЙ (ОТОБРАЖЕНИЕ) ---
-
+# --- СПИСОК ЗАДАНИЙ ---
 @dp.callback_query(F.data == "tasks_list")
 async def show_tasks(call: types.CallbackQuery):
     if not await check_main_subs(call.from_user.id): 
@@ -308,358 +193,383 @@ async def show_tasks(call: types.CallbackQuery):
     
     tasks = db.get_all_tasks()
     keyboard = []
+    
     for t in tasks:
-        # t[0] - ID, t[1] - Название, t[3] - Награда
+        # t[0] - ID задания, t[1] - Название, t[3] - Награда
+        # Показываем только те, что юзер еще НЕ выполнил
         if not db.is_task_completed(call.from_user.id, t[0]):
             keyboard.append([types.InlineKeyboardButton(
-                text=f"{t[1]} ({t[3]} ⭐)", 
+                text=f"🎯 {t[1]} (+{t[3]} ⭐)", 
                 callback_data=f"view_task_{t[0]}"
             )])
     
     keyboard.append([types.InlineKeyboardButton(text="⬅️ Назад", callback_data="profile")])
-    await call.message.edit_text("🎯 Доступные задания:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard))
+    
+    if not keyboard or len(keyboard) == 1:
+        await call.message.edit_text("📭 Пока нет новых заданий. Заходи позже!", reply_markup=kb.main_menu())
+    else:
+        await call.message.edit_text("🎯 **Доступные задания:**", 
+                                     reply_markup=types.InlineKeyboardMarkup(inline_keyboard=keyboard),
+                                     parse_mode="Markdown")
 
+# --- РЕФЕРАЛЬНЫЙ РАЗДЕЛ ---
+@dp.callback_query(F.data == "refs")
+async def show_refs(call: types.CallbackQuery):
+    # Берем количество рефов L1 и L2 из базы
+    l1, l2 = db.get_detailed_refs(call.from_user.id)
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={call.from_user.id}"
+    
+    text = (
+        f"👥 **ВАША КОМАНДА**\n\n"
+        f"🥇 **Уровень 1:** **{l1}** чел. (+5.0 ⭐)\n"
+        f"🥈 **Уровень 2:** **{l2}** чел. (+1.0 ⭐)\n\n"
+        f"🔗 **Твоя ссылка для приглашения:**\n"
+        f"`{link}`"
+    )
+    await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
+
+# --- ПРОСМОТР КОНКРЕТНОГО ЗАДАНИЯ ---
 @dp.callback_query(F.data.startswith("view_task_"))
 async def view_task(call: types.CallbackQuery):
     task_id = int(call.data.split("_")[2])
+    # Ищем задачу в базе по ID
     task = next((t for t in db.get_all_tasks() if t[0] == task_id), None)
+    
     if task:
-        # task[1] - Название, task[3] - Награда, task[2] - Ссылка
+        # task[1]-Название, task[3]-Награда, task[2]-Ссылка
+        text = (
+            f"📢 **ЗАДАНИЕ:** {task[1]}\n"
+            f"💰 **НАГРАДА:** {task[3]} ⭐\n\n"
+            f"1️⃣ Перейди по ссылке и подпишись.\n"
+            f"2️⃣ Вернись и нажми кнопку 'Проверить'."
+        )
         await call.message.edit_text(
-            f"📢 **Задание:** {task[1]}\n💰 **Награда:** {task[3]} ⭐\n\n"
-            f"Подпишись на канал по ссылке ниже и нажми 'Проверить'.",
-            reply_markup=kb.task_button(task[2], task[0]),
+            text, 
+            reply_markup=kb.task_button(task[2], task[0]), # Кнопка-ссылка + кнопка проверки
             parse_mode="Markdown"
         )
+    else:
+        await call.answer("⚠️ Задание не найдено или уже удалено.", show_alert=True)
 
-
-# Рефка
+# --- ПРОВЕРКА ВЫПОЛНЕНИЯ (Кнопка 'Проверить') ---
 @dp.callback_query(F.data.startswith("check_"))
 async def check_sub_task(call: types.CallbackQuery):
     task_id = int(call.data.split("_")[1])
     user_id = call.from_user.id
 
-    # 1. ПРОВЕРКА: Не выполнял ли юзер это задание раньше?
+    # 1. Защита: не выполнял ли уже?
     if db.is_task_completed(user_id, task_id):
-        return await call.answer("🚫 Вы уже получили награду за это задание!", show_alert=True)
+        return await call.answer("🚫 Награда уже получена!", show_alert=True)
 
-    # Получаем данные о задании
     task = next((t for t in db.get_all_tasks() if t[0] == task_id), None)
     if not task:
-        return await call.answer("⚠️ Задание не найдено.", show_alert=True)
+        return await call.answer("⚠️ Задание больше не активно.", show_alert=True)
     
     try:
-        # Проверка подписки в канале (task[4] — это ID или @канала)
+        # Проверяем подписку (в task[4] должен лежать @username или ID канала)
         member = await bot.get_chat_member(chat_id=task[4], user_id=user_id)
         
         if member.status in ["member", "administrator", "creator"]:
-            reward = task[3] # Основная награда юзеру
+            reward = task[3]
             
-            # 2. НАЧИСЛЯЕМ ЮЗЕРУ
+            # 2. НАЧИСЛЯЕМ ИСПОЛНИТЕЛЮ
             db.update_balance(user_id, reward)
-            db.complete_task(user_id, task_id) # Помечаем как выполненное В БАЗЕ
+            db.complete_task(user_id, task_id)
             
-            # 3. РЕФЕРАЛЬНЫЕ НАЧИСЛЕНИЯ
+            # 3. РЕФЕРАЛЬНЫЕ (L1 - 10%, L2 - 5%)
             user_data = db.get_user(user_id)
-            parent_id = user_data[2] if user_data else None # Тот, кто пригласил
+            parent_id = user_data[2] if user_data else None
             
             if parent_id:
-                # Начисляем Папе (L1) — 10%
+                # Начисляем Папе (10%)
                 reward_l1 = round(reward * 0.10, 2)
                 db.update_balance(parent_id, reward_l1)
                 
-                # Ищем Дедушку (L2) — 5%
+                # Ищем Дедушку (5%)
                 parent_data = db.get_user(parent_id)
-                grandpa_id = parent_data[2] if parent_data else None
-                
+                grandpa_id = parent_data[2] if parent_data and len(parent_data) > 2 else None
                 if grandpa_id:
                     reward_l2 = round(reward * 0.05, 2)
                     db.update_balance(grandpa_id, reward_l2)
             
-            await call.answer("✅ Задание выполнено! Звезды начислены.", show_alert=True)
-            # Обновляем сообщение со списком заданий, чтобы выполненное исчезло (или пометилось)
-            await show_tasks(call) 
+            await call.answer("✅ Подписка подтверждена! Награда начислена.", show_alert=True)
+            # Возвращаем юзера в список оставшихся заданий
+            await show_tasks(call)
             
         else:
-            await call.answer("❌ Вы еще не подписались на канал!", show_alert=True)
+            await call.answer("❌ Ты не подписался на канал!", show_alert=True)
             
     except Exception as e:
         print(f"Ошибка проверки подписки: {e}")
-        await call.answer("⚠️ Бот не может проверить подписку. Убедитесь, что бот — админ в канале.", show_alert=True)
+        await call.answer("⚠️ Бот не видит твою подписку. Убедись, что бот - админ в том канале!", show_alert=True)
 
 # --- ЕЖЕДНЕВНЫЙ БОНУС (ЧЕК-ИН) ---
-
 @dp.callback_query(F.data == "daily_bonus")
 async def daily_checkin(call: types.CallbackQuery):
-    user = db.get_user(call.from_user.id) # [id, balance, ref_id, last_checkin, streak]
+    user = db.get_user(call.from_user.id) # [id, balance, ref_id, last_checkin, streak...]
+    if not user: return
+    
     last_checkin = user[3]
     streak = user[4] or 0
     now = datetime.now()
 
+    # Проверка: прошло ли 24 часа?
     if last_checkin and (now - last_checkin) < timedelta(days=1):
         remaining = (last_checkin + timedelta(days=1)) - now
         hours = remaining.seconds // 3600
         mins = (remaining.seconds // 60) % 60
-        return await call.answer(f"⏳ Жди еще {hours}ч. {mins}мин.", show_alert=True)
+        return await call.answer(f"⏳ Приходи через {hours}ч. {mins}мин.", show_alert=True)
 
-    # Если пропустил больше 2 дней — сброс на 1, иначе +1 (макс 10)
+    # Если пропустил больше 2 дней — сброс серии, иначе +1 (макс до 10 дней)
     new_streak = streak + 1 if (not last_checkin or (now - last_checkin) <= timedelta(days=2)) and streak < 10 else 1
     
-    reward = round(new_streak * 0.1, 1) # Награда растет с каждым днем
+    reward = round(new_streak * 0.1, 1) # Награда растет: 0.1, 0.2 ... 1.0 ⭐
     db.update_balance(call.from_user.id, reward)
     db.update_checkin(call.from_user.id, new_streak)
     
-    await call.message.answer(f"✅ День {new_streak}: Получено {reward} ⭐!", reply_markup=kb.main_menu())
-
-# --- ОБРАБОТКА КНОПКИ РЕФЕРАЛЫ ---
-@dp.callback_query(F.data == "refs")
-async def show_refs(call: types.CallbackQuery):
-    l1, l2 = db.get_detailed_refs(call.from_user.id)
-    link = f"https://t.me/{(await bot.get_me()).username}?start={call.from_user.id}"
-    
-    text = (
-        f"👥 **ВАША КОМАНДА**\n\n"
-        f"🥇 **Уровень 1:**\n"
-        f"├ Рефералов: **{l1}** чел.\n"
-        f"└ Бонус: **+5.0 ⭐** за вход + **10%** с заданий\n\n"
-        f"🥈 **Уровень 2:**\n"
-        f"├ Рефералов: **{l2}** чел.\n"
-        f"└ Бонус: **+1.0 ⭐** за вход + **5%** с заданий\n\n"
-        f"🔗 **Ваша ссылка:**\n"
-        f"`{link}`"
-    )
-    # Проверь, чтобы await был ровно под text
-    await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
-
-# --- НОВАЯ БЕЗОПАСНАЯ РАССЫЛКА ---
-@dp.message(F.text.startswith("/send "), F.from_user.id == config.ADMIN_ID)
-async def admin_broadcast_cmd(message: types.Message):
-    broadcast_text = message.text.replace("/send ", "").strip()
-    if not broadcast_text:
-        return await message.answer("❌ Напиши: `/send Твой текст`")
-    
-    users = db.get_all_users()
-    count = 0
-    await message.answer("🚀 Начинаю рассылку...")
-    
-    for user in users:
-        try:
-            await bot.send_message(user[0], broadcast_text)
-            count += 1
-            await asyncio.sleep(0.05) # Защита от бана
-        except:
-            continue
-            
-    await message.answer(f"✅ Рассылка завершена! Получили: {count} чел.")
-
-# --- ОБРАБОТКА КНОПКИ СПЕЦ-ЗАДАНИЯ ---
-@dp.callback_query(F.data == "high_reward")
-async def high_reward_tasks(call: types.CallbackQuery):
-    await call.answer("🔥 Спец-задания появятся скоро!", show_alert=True)
-
-# --- ПРОМОКОДЫ: ОБРАБОТКА (КНОПКА В МЕНЮ И ИНЛАЙН) ---
-
-# Если нажали кнопку в обычном меню
-@dp.message(F.text == "🎫 Промокод")
-async def promo_menu_handler(message: types.Message):
-    # Сбрасываем кэш вывода, если он был, чтобы не мешал
-    if message.from_user.id in withdraw_cache: del withdraw_cache[message.from_user.id]
-    
-    promo_cache[message.from_user.id] = True
-    await message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
-
-# Если нажали инлайн-кнопку (из профиля или заданий)
-@dp.callback_query(F.data == "promo_activate")
-async def promo_callback_handler(call: types.CallbackQuery):
-    if call.from_user.id in withdraw_cache: del withdraw_cache[call.from_user.id]
-    
-    promo_cache[call.from_user.id] = True
-    await call.message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
+    await call.message.answer(f"✅ **День {new_streak}**\n💰 Получено: **{reward} ⭐**", 
+                              reply_markup=kb.main_menu(), parse_mode="Markdown")
     await call.answer()
 
-
-# --- ВЫВОД: ВЫБОР МЕТОДА ---
-
+# --- ВЫВОД: ВЫБОР МЕТОДА (Начало FSM) ---
 @dp.callback_query(F.data.startswith("meth_"))
-async def choose_method(call: types.CallbackQuery):
-    # Сбрасываем кэш промокода, если юзер решил вместо него вывести деньги
-    if call.from_user.id in promo_cache: del promo_cache[call.from_user.id]
+async def choose_withdraw_method(call: types.CallbackQuery, state: FSMContext):
+    # Если юзер был в режиме промокода — отменяем его
+    promo_cache.pop(call.from_user.id, None)
     
     method = call.data.split("_")[1].upper()
-    withdraw_cache[call.from_user.id] = {'method': method}
+    
+    # Сохраняем метод в FSM (состояние бота)
+    await state.update_data(withdraw_method=method)
+    
+    # ПЕРЕКЛЮЧАЕМ ЮЗЕРА В СОСТОЯНИЕ ОЖИДАНИЯ СУММЫ
+    await state.set_state(WithdrawState.wait_amount)
     
     await call.message.answer(
-        f"✅ Выбран метод: **{method}**\n\n"
-        f"**Шаг 1:** Введите количество ⭐ для вывода (минимум 200):",
+        f"💎 Выбран метод: **{method}**\n\n"
+        f"**Шаг 1:** Введите количество ⭐ для вывода\n"
+        f"(Минимум: {config.MIN_WITHDRAW} ⭐)",
         parse_mode="Markdown"
     )
     await call.answer()
 
+# --- 1. ОБРАБОТКА ВВОДА СУММЫ ---
+@dp.message(WithdrawState.wait_amount)
+async def withdraw_amount_input(message: types.Message, state: FSMContext):
+    # Проверяем, что введено число
+    if not message.text or not message.text.isdigit():
+        return await message.answer("❌ Пожалуйста, введите сумму цифрами (например: 250)")
 
-# --- ЕДИНЫЙ ОБРАБОТЧИК ТЕКСТА (ПРОМО + ВЫВОД) ---
-
-@dp.message(F.text, ~F.text.startswith("/"))
-async def handle_all_text(message: types.Message):
+    amount = int(message.text)
     user_id = message.from_user.id
-    text = message.text.strip()
     user_data = db.get_user(user_id)
-    if not user_data: return
+    current_balance = user_data[1] if user_data else 0
 
-    # ПРОМОКОДЫ
-    if promo_cache.get(user_id):
-        code = text.upper()
-        promo = db.get_promo(code)
-        if not promo:
-            await message.answer("❌ Нет такого кода.")
-        elif promo[2] <= 0:
-            await message.answer("❌ Код закончился.")
-        else:
-            if db.is_task_completed(user_id, f"p_{code}"):
-                await message.answer("🚫 Уже использовано.")
-            else:
-                db.update_balance(user_id, promo[1])
-                db.add_completed_task(user_id, f"p_{code}")
-                db.use_promo(code)
-                await message.answer(f"✅ +{promo[1]} ⭐")
-        promo_cache.pop(user_id, None)
-        return
+    # Проверка лимитов
+    if amount < config.MIN_WITHDRAW:
+        return await message.answer(f"❌ Минимальная сумма вывода: **{config.MIN_WITHDRAW} ⭐**", parse_mode="Markdown")
+    
+    if amount > current_balance:
+        return await message.answer(f"❌ Недостаточно средств! Ваш баланс: **{current_balance} ⭐**", parse_mode="Markdown")
 
-    # ВЫВОД
-    elif user_id in withdraw_cache:
-        data = withdraw_cache[user_id]
-        if 'amount' not in data:
-            if not text.isdigit(): return await message.answer("❌ Введи число!")
-            amount = int(text)
-            if amount < 200 or amount > user_data[1]:
-                return await message.answer("❌ Ошибка суммы или баланса.")
-            withdraw_cache[user_id]['amount'] = amount
-            await message.answer("💳 Введи реквизиты:")
-        else:
-            amount = data['amount']
-            db.update_balance(user_id, -amount)
-            admin_kb = types.InlineKeyboardMarkup(inline_keyboard=[[
-                types.InlineKeyboardButton(text="✅ Ок", callback_data=f"adm_pay_{user_id}_{amount}"),
-                types.InlineKeyboardButton(text="❌ Отказ", callback_data=f"adm_refuse_{user_id}_{amount}")
-            ]])
-            await bot.send_message(config.ADMIN_ID, f"🚀 Вывод {amount} ⭐ от {user_id}\nРеквизиты: {text}", reply_markup=admin_kb)
-            await message.answer("✅ Заявка отправлена!")
-            withdraw_cache.pop(user_id, None)
+    # Сохраняем сумму в память FSM
+    await state.update_data(withdraw_amount=amount)
+    
+    # Получаем метод, который выбрали на прошлом шаге
+    data = await state.get_data()
+    method = data.get("withdraw_method")
+
+    # ЛОГИКА РАЗДЕЛЕНИЯ: Звезды vs Остальное
+    if method == "STARS":
+        await message.answer(
+            f"🌟 Вывод: **{amount} Stars**\n\n"
+            f"**Шаг 2:** Введите ваш **@username** или ссылку на профиль, куда отправить звёзды.",
+            parse_mode="Markdown"
+        )
     else:
-        await message.answer("❓ Используй меню.")
-        
-# --- ОБРАБОТКА РЕШЕНИЙ АДМИНА ПО ВЫПЛАТАМ ---
+        await message.answer(
+            f"💎 Вывод: **{amount} {method}**\n\n"
+            f"**Шаг 2:** Введите адрес вашего **кошелька** для получения выплаты.",
+            parse_mode="Markdown"
+        )
+    
+    # Переходим к ожиданию реквизитов
+    await state.set_state(WithdrawState.wait_details)
 
-@dp.message(F.text, ~F.text.startswith("/"))
-async def handle_all_text(message: types.Message):
+# --- 2. ОБРАБОТКА РЕКВИЗИТОВ И СПИСАНИЕ ---
+@dp.message(WithdrawState.wait_details)
+async def withdraw_details_input(message: types.Message, state: FSMContext):
+    details = message.text
     user_id = message.from_user.id
-    text = message.text.strip()
-    user_data = db.get_user(user_id) # Получаем данные из БД
+    
+    # Забираем данные из памяти FSM
+    data = await state.get_data()
+    amount = data.get("withdraw_amount")
+    method = data.get("withdraw_method")
 
-    if not user_data: return
+    # --- КРИТИЧЕСКИЙ МОМЕНТ: СПИСАНИЕ СРЕДСТВ ---
+    # Еще раз проверяем баланс перед списанием (на всякий случай)
+    user_current = db.get_user(user_id)
+    if not user_current or user_current[1] < amount:
+        await state.clear()
+        return await message.answer("❌ Ошибка: Недостаточно средств на балансе.")
 
-    # 1. Если юзер вводит ПРОМОКОД (оставляем твою логику)
-    if promo_cache.get(user_id):
-        code = text.upper()
-        promo = db.get_promo(code)
-        if not promo:
-            await message.answer("❌ Такого промокода не существует.")
-        elif promo[2] <= 0:
-            await message.answer("❌ Этот промокод закончился.")
-        else:
-            p_id = f"p_{code}"
-            if db.is_task_completed(user_id, p_id):
-                await message.answer("🚫 Вы уже использовали этот код.")
-            else:
-                db.update_balance(user_id, promo[1])
-                db.add_completed_task(user_id, p_id)
-                db.use_promo(code)
-                await message.answer(f"✅ Успешно! Начислено **{promo[1]} ⭐**", parse_mode="Markdown")
-        promo_cache.pop(user_id, None)
-        return
+    # Списываем баланс в базе (отрицательное число)
+    db.update_balance(user_id, -float(amount))
+    
+    # Создаем заявку в базе (чтобы админ ее видел)
+    db.add_withdraw_request(user_id, amount, method, details)
 
-    # 2. Если юзер в процессе ВЫВОДА
-    elif user_id in withdraw_cache:
-        data = withdraw_cache[user_id]
+    # Уведомляем админа
+    try:
+        admin_text = (
+            f"💰 **НОВАЯ ЗАЯВКА НА ВЫВОД**\n\n"
+            f"👤 От: `{user_id}`\n"
+            f"💵 Сумма: **{amount} ⭐**\n"
+            f"🏦 Метод: **{method}**\n"
+            f"📝 Реквизиты: `{details}`"
+        )
+        await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="Markdown")
+    except: pass
 
-        if 'amount' not in data: # ШАГ 1: СУММА
-            if not text.isdigit():
-                return await message.answer("❌ Введите число!")
-            
-            amount = int(text)
-            if amount < 200:
-                return await message.answer("❌ Минимум 200 ⭐")
-            if amount > user_data[1]: # Баланс из БД
-                return await message.answer(f"❌ Недостаточно звезд! У вас: {user_data[1]} ⭐")
-            
-            withdraw_cache[user_id]['amount'] = amount
-            await message.answer(f"💰 Сумма: **{amount} ⭐**\n\n**Шаг 2:** Введите реквизиты:", parse_mode="Markdown")
+    await message.answer(
+        f"✅ **Заявка принята!**\n\n"
+        f"Сумма **{amount} ⭐** списана с вашего баланса.\n"
+        f"Ожидайте выплату в течение 24 часов.",
+        reply_markup=kb.main_menu(),
+        parse_mode="Markdown"
+    )
+    
+    # ПОЛНОСТЬЮ ОЧИЩАЕМ СОСТОЯНИЕ (Выходим из режима вывода)
+    await state.clear()
 
-        else: # ШАГ 2: РЕКВИЗИТЫ И ФИНАЛ
-            method = data['method']
-            amount = data['amount']
-            
-            # --- ГЛАВНЫЕ ИЗМЕНЕНИЯ ТУТ ---
-            db.update_balance(user_id, -amount) # СПИСЫВАЕМ СРАЗУ (с минусом)
-
-            # Кнопки для админа (тебя)
-            admin_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    types.InlineKeyboardButton(text="✅ Выплатить", callback_data=f"adm_pay_{user_id}_{amount}"),
-                    types.InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_refuse_{user_id}_{amount}")
-                ]
-            ])
-
-            admin_text = (
-                f"🚀 **НОВАЯ ЗАЯВКА!**\n\n"
-                f"👤 Юзер: @{message.from_user.username} (ID: `{user_id}`)\n"
-                f"💵 Сумма: **{amount} ⭐**\n"
-                f"📝 Реквизиты: `{text}`\n"
-            )
-            
-            await bot.send_message(config.ADMIN_ID, admin_text, reply_markup=admin_kb, parse_mode="Markdown")
-            await message.answer("✅ **Заявка отправлена!**\nЗвезды списаны. Ожидайте выплату.")
-            withdraw_cache.pop(user_id, None)
-        return
-
-    else:
-        await message.answer("❓ Пожалуйста, используйте кнопки меню.")
-
-
-@dp.callback_query(F.data.startswith("adm_"))
+# --- ОБРАБОТКА РЕШЕНИЙ АДМИНА ПО ВЫПЛАТАМ (Авто-возврат) ---
+@dp.callback_query(F.data.startswith("adm_"), F.from_user.id == config.ADMIN_ID)
 async def admin_decision(call: types.CallbackQuery):
-    if call.from_user.id != int(config.ADMIN_ID): return
     parts = call.data.split("_")
-    action, target_id, amount = parts[1], int(parts[2]), float(parts[3])
+    # Формат: adm_pay_USERID_AMOUNT или adm_refuse_USERID_AMOUNT
+    action = parts[1]
+    target_id = int(parts[2])
+    amount = float(parts[3])
 
     if action == "pay":
-        try: await bot.send_message(target_id, f"✅ Выплата {amount} ⭐ одобрена!")
+        try:
+            await bot.send_message(target_id, f"✅ **Выплата одобрена!**\nСумма **{amount} ⭐** успешно отправлена на ваши реквизиты.", parse_mode="Markdown")
         except: pass
-        await call.message.edit_text(call.message.text + "\n✅ ВЫПЛАЧЕНО")
+        await call.message.edit_text(call.message.text + "\n\n✅ **СТАТУС: ВЫПЛАЧЕНО**")
+        
     elif action == "refuse":
-        db.update_balance(target_id, amount) # ВОЗВРАТ
-        try: await bot.send_message(target_id, f"❌ Вывод {amount} ⭐ отклонен, возврат.")
+        # АВТО-ВОЗВРАТ СРЕДСТВ ПРИ ОТКЛОНЕНИИ
+        db.update_balance(target_id, amount)
+        try:
+            await bot.send_message(target_id, f"❌ **Вывод отклонен.**\nСумма **{amount} ⭐** возвращена на ваш баланс.", parse_mode="Markdown")
         except: pass
-        await call.message.edit_text(call.message.text + "\n❌ ОТКАЗАНО")
+        await call.message.edit_text(call.message.text + "\n\n❌ **СТАТУС: ОТКЛОНЕНО (Средства возвращены)**")
+    
     await call.answer()
 
-# --- ФОНОВАЯ ЗАДАЧА И ЗАПУСК ---
+# --- АДМИН-КОМАНДЫ (УПРАВЛЕНИЕ) ---
 
-async def auto_delete_tasks():
-    while True:
-        try: db.delete_expired_tasks()
+@dp.message(F.text == "/admin", F.from_user.id == config.ADMIN_ID)
+async def admin_panel(message: types.Message):
+    stats = db.get_admin_stats() # Должна возвращать словарь с ключами: users_count, total_balance, tasks_count, pending_withdraws
+    text = (
+        f"🖥 **АДМИН-ПАНЕЛЬ**\n\n"
+        f"👥 Юзеров: `{stats['users_count']}`\n"
+        f"💰 Звезд в системе: `{round(stats['total_balance'], 2)}` ⭐\n"
+        f"⏳ Заявок на вывод: `{stats['pending_withdraws']}`\n"
+    )
+    kb_admin = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="📋 Задания", callback_data="adm_tasks_list")],
+        [types.InlineKeyboardButton(text="📢 Рассылка", callback_data="adm_broadcast")]
+    ])
+    await message.answer(text, reply_markup=kb_admin, parse_mode="Markdown")
+
+@dp.message(F.text.startswith("/add "), F.from_user.id == config.ADMIN_ID)
+async def admin_add_task(message: types.Message):
+    try:
+        # Формат: /add Название Ссылка Награда @канал Часы
+        parts = message.text.split(" ")
+        title, url, reward, channel_id, hours = parts[1], parts[2], float(parts[3]), parts[4], int(parts[5])
+        expire_time = datetime.now() + timedelta(hours=hours)
+        db.add_task(title, url, reward, channel_id, expire_time)
+        await message.answer(f"✅ Задание **{title}** добавлено на {hours}ч.!", parse_mode="Markdown")
+    except:
+        await message.answer("❌ Формат: `/add Имя Ссылка Награда @channel 24`", parse_mode="Markdown")
+
+@dp.message(F.text.startswith("/give "), F.from_user.id == config.ADMIN_ID)
+async def admin_give(message: types.Message):
+    try:
+        parts = message.text.split(" ")
+        target, amount = int(parts[1]), float(parts[2])
+        db.update_balance(target, amount)
+        await message.answer(f"🎁 Начислено {amount} ⭐ пользователю `{target}`")
+        try: await bot.send_message(target, f"🎁 Админ начислил вам бонус: **{amount} ⭐**!", parse_mode="Markdown")
         except: pass
-        await asyncio.sleep(600)
+    except:
+        await message.answer("❌ Формат: `/give ID сумма`")
+
+@dp.message(Command("send"), F.from_user.id == config.ADMIN_ID)
+async def admin_broadcast(message: types.Message, command: CommandObject):
+    if not command.args: return await message.answer("❌ Напиши текст рассылки после команды.")
+    users = db.get_all_users()
+    count = 0
+    msg = await message.answer("🚀 Начинаю рассылку...")
+    for user in users:
+        try:
+            await bot.send_message(user[0], command.args)
+            count += 1
+            await asyncio.sleep(0.05)
+        except: continue
+    await msg.edit_text(f"✅ Рассылка завершена! Получили: {count} чел.")
 
 
-async def start_bot():
-    db.init_db()
-    asyncio.create_task(auto_delete_tasks())
+# --- ОБРАБОТКА ТЕКСТА (ПРОМОКОДЫ) ---
+@dp.message(F.text, StateFilter(None)) # Работает только когда юзер НЕ в процессе вывода
+async def handle_promo(message: types.Message):
+    # Если это не команда, проверяем как промокод
+    if message.text.startswith('/'): return
+    
+    promo_code = message.text.strip()
+    user_id = message.from_user.id
+    
+    # Ищем промокод в базе
+    promo = db.get_promo(promo_code)
+    
+    if not promo:
+        # Если это не промокод и не команда, просто игнорим или даем подсказку
+        return 
+
+    # promo[0]-ID, [1]-Код, [2]-Сумма, [3]-Макс_активаций, [4]-Использовано
+    promo_id, code, reward, max_uses, current_uses = promo
+    
+    if current_uses >= max_uses:
+        return await message.answer("❌ Этот промокод уже закончился!")
+    
+    if db.is_promo_used(user_id, promo_id):
+        return await message.answer("❌ Вы уже активировали этот промокод!")
+    
+    # Активация
+    db.use_promo(user_id, promo_id, reward)
+    await message.answer(f"🎁 Промокод активирован!\n💰 Начислено: **{reward} ⭐**", parse_mode="Markdown")
+
+# --- ФУНКЦИЯ ЗАПУСКА ---
+async def main():
+    # Запускаем Flask для Render (Keep Alive)
     keep_alive()
-    print("Money Farm Bot Started on Postgres!")
+    
+    # Запускаем фоновую задачу очистки старых заданий
+    asyncio.create_task(auto_delete_tasks())
+    
+    print("🚀 Бот Money Farm запущен!")
+    
+    # Удаляем вебхуки и начинаем опрос серверов Telegram
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
-        asyncio.run(start_bot())
+        asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
-        print("Bot Stopped")
+        print("Бот остановлен")
