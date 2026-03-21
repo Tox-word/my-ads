@@ -241,3 +241,20 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         print("Бот остановлен")
+
+# Команда: /db_clear СЕКРЕТ
+@dp.message(Command("db_clear"))
+async def admin_clear_db(message: types.Message, command: CommandObject):
+    # Проверка на админа
+    if message.from_user.id != cfg.ADMIN_ID:
+        return
+
+    # Проверка секретного аргумента (защита от случайного нажатия)
+    if command.args == "CONFIRM":
+        try:
+            db.clear_database_full()
+            await message.answer("⚠️ **База данных полностью очищена и пересоздана!**\nВсе пользователи и балансы удалены.")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка при очистке: {e}")
+    else:
+        await message.answer("❗ Чтобы подтвердить удаление ВСЕХ данных, введите:\n`/db_clear CONFIRM`")
