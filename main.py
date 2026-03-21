@@ -23,7 +23,6 @@ class WithdrawState(StatesGroup):
 # Временное хранилище для промокодов (оставляем простым)
 promo_cache = {} 
 
-
 async def main():
     # --- БЛОК ОЧИСТКИ БАЗЫ (УДАЛИТЬ ПОСЛЕ ПЕРВОГО ЗАПУСКА) ---
     with db.get_connection() as conn:
@@ -43,7 +42,6 @@ async def main():
             conn.rollback()
     # --- КОНЕЦ БЛОКА ОЧИСТКИ ---
 
-async def main():
     # --- ПРОВЕРКА И ОБНОВЛЕНИЕ СТРУКТУРЫ БД ---
     with db.get_connection() as conn:
         cur = conn.cursor()
