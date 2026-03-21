@@ -1,29 +1,39 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 import config
 
-# Главное меню
+# --- ГЛАВНОЕ МЕНЮ ---
 def main_menu():
     buttons = [
-        # Кнопка для рекламы
+        # Рекламная кнопка (через WebApp)
         [InlineKeyboardButton(text="📺 Смотреть видео (0.5 ⭐)", web_app=WebAppInfo(url=config.ADSGRAM_URL))],
         
-        # --- НОВАЯ КНОПКА: ЕЖЕДНЕВНЫЙ БОНУС ---
+        # Основные функции
         [InlineKeyboardButton(text="🎁 Ежедневный бонус", callback_data="daily_bonus")],
-        
         [InlineKeyboardButton(text="📢 Задания на подписку", callback_data="tasks_list")],
-        [InlineKeyboardButton(text="🔥 СПЕЦ-ЗАДАНИЯ (ОТ 50 ⭐)", callback_data="high_reward")],
+        [InlineKeyboardButton(text="🔥 СПЕЦ-ЗАДАНИЯ", callback_data="high_reward")],
 
         [InlineKeyboardButton(text="🎫 Промокод", callback_data="promo_activate")],
         
+        # Профиль и рефка в одну строку
         [InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
          InlineKeyboardButton(text="👥 Рефералы", callback_data="refs")],
         
-        # Ссылка на твою личку
+        # Сотрудничество
         [InlineKeyboardButton(text="🤝 Сотрудничество", url="https://t.me/tox6c9ty")] 
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# Меню выбора валюты вывода
+# --- КНОПКИ В ПРОФИЛЕ ---
+def profile_kb(can_withdraw: bool = False):
+    buttons = []
+    # Показываем кнопку вывода только если баланс позволяет (логика из main)
+    if can_withdraw:
+        buttons.append([InlineKeyboardButton(text="💳 Вывести ⭐", callback_data="withdraw_request")])
+    
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="to_main")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+# --- ВЫБОР ВАЛЮТЫ ВЫВОДА ---
 def withdraw_currency_kb():
     buttons = [
         [InlineKeyboardButton(text="💎 TON", callback_data="out_TON"),
@@ -33,42 +43,19 @@ def withdraw_currency_kb():
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# Кнопка для конкретного задания
-def task_button(url, task_id):
+# --- КНОПКИ ДЛЯ ЗАДАНИЯ ---
+def task_check_kb(url, task_id):
     buttons = [
         [InlineKeyboardButton(text="🔗 Перейти в канал", url=url)],
-        [InlineKeyboardButton(text="✅ Проверить подписку", callback_data=f"check_{task_id}")],
+        [InlineKeyboardButton(text="✅ Проверить подписку", callback_data=f"check_task_{task_id}")],
         [InlineKeyboardButton(text="⬅️ К списку", callback_data="tasks_list")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# Кнопка админ-панели (для сообщения /admin)
+# --- АДМИН-ПАНЕЛЬ ---
 def admin_panel_kb():
     buttons = [
         [InlineKeyboardButton(text="📋 Список всех заданий", callback_data="adm_tasks_list")],
         [InlineKeyboardButton(text="📢 Рассылка", callback_data="adm_broadcast")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-# Кнопка профиля
-def profile_kb():
-    kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="💳 Вывести ⭐", callback_data="withdraw_request"))
-    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="to_main"))
-    return kb.as_markup()
-
-# Кнопка выбора валюты для вывода
-def withdraw_methods_kb():
-    builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="💎 TON (Кошелек)", callback_data="meth_ton"))
-    builder.row(types.InlineKeyboardButton(text="💵 Доллары (USD)", callback_data="meth_usd"))
-    builder.row(types.InlineKeyboardButton(text="⭐ Звезды (Stars)", callback_data="meth_stars"))
-    builder.row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="to_profile"))
-    return builder.as_markup()
-
-
-
-
-
-
