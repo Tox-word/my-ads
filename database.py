@@ -126,3 +126,14 @@ def complete_task_db(user_id, task_id, reward):
             conn.commit()
             return True
         return False
+
+
+def clear_database_full():
+    """Полная зачистка и пересоздание таблиц."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        # Удаляем все таблицы, которые мы создавали
+        cur.execute('''DROP TABLE IF EXISTS users, tasks, completed_actions, promos, withdrawals CASCADE;''')
+        conn.commit()
+    # После удаления сразу вызываем инициализацию, чтобы бот не вылетел
+    init_db()
