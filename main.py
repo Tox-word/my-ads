@@ -164,27 +164,19 @@ async def admin_give_stars(message: types.Message, command: CommandObject):
 # --- МАССОВАЯ РАССЫЛКА ---
 # Формат: /send Текст сообщения
 @dp.message(Command("send"), F.from_user.id == cfg.ADMIN_ID)
-async def admin_broadcast(message: types.Message, command: CommandObject):
-    broadcast_text = command.args
-    if not broadcast_text:
-        return await message.answer("❌ Введите текст: `/send Всем привет!`")
+async def admin_send_all(message: types.Message, command: CommandObject):
+    if not command.args:
+        return await message.answer("❌ Формат: `/send Текст рассылки`")
     
-    # Получаем список всех ID из базы
     users = db.get_all_users()
     count = 0
-    await message.answer(f"🚀 Начинаю рассылку на {len(users)} чел...")
-    
-    for user in users:
+    for user_id in users:
         try:
-            # user[0] - это ID пользователя в списке кортежей
-            await bot.send_message(user[0], broadcast_text)
+            await bot.send_message(user_id, command.args)
             count += 1
-            # Микро-пауза, чтобы Telegram не забанил за спам
-            await asyncio.sleep(0.05) 
-        except:
-            continue
-            
-    await message.answer(f"✅ Рассылка завершена!\n📩 Доставлено: {count} пользователям.")
+            await asyncio.sleep(0.05)
+        except: continue
+    await message.answer(f"✅ Рассылка завершена. Получили: {count} чел.")
 
 # --- КНОПКА: ПРОФИЛЬ ---
 @dp.callback_query(F.data == "profile")
@@ -278,6 +270,73 @@ async def cb_check_task(call: types.CallbackQuery):
             
     except Exception:
         await call.answer("⚠️ Ошибка проверки. Убедитесь, что бот является админом в целевом канале.", show_alert=True)
+
+# 1. Команда для админа (создание промо)
+@dp.message(Command("addpromo"), F.from_user.id == cfg.ADMIN_ID)
+async def adm_add_promo(message: types.Message, command: CommandObject):
+    try:
+        args = command.args.split()
+        code, reward, uses = args[0].upper(), float(args[1]), int(args[2])
+        db.add_promo(code, reward, uses)
+        await message.answer(f"✅ Промокод `{code}` на {reward} ⭐ создан!")
+    except:
+        await message.answer("❌ Ошибка! Формат: `/addpromo КОД НАГРАДА КОЛВО`")
+
+# 2. Нажатие кнопки в меню
+@dp.callback_query(F.data == "promo_activate")
+async def cb_promo_start(call: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.wait_broadcast_text) # Используем любое состояние для перехвата текста
+    await call.message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
+    await call.answer()
+
+# 3. Обработка введенного кода (вставь это В КОНЕЦ всех хендлеров текста)
+@dp.message(F.text, ~F.text.startswith("/"))
+async def handle_promo_logic(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state == AdminStates.wait_broadcast_text:
+        res = db.use_promo_safe(message.from_user.id, message.text)
+        if res == "SUCCESS":
+            await message.answer("✅ Промокод успешно активирован!")
+        elif res == "USED":
+            await message.answer("🚫 Вы уже использовали этот код.")
+        else:
+            await message.answer("❌ Код не найден или закончился.")
+        await state.clear()
+
+@dp.callback_query(F.data == "daily_bonus")
+async def cb_daily_bonus(call: types.CallbackQuery):
+    user = db.get_user(call.from_user.id)
+    now = datetime.now()
+    
+    # Проверка: прошло ли 24 часа с последнего чекина
+    if user['last_checkin'] and (now - user['last_checkin']).total_seconds() < 86400:
+        return await call.answer("⏳ Бонус можно взять раз в 24 часа!", show_alert=True)
+    
+    reward = 1.0 # Фиксированная награда
+    db.update_balance(call.from_user.id, reward)
+    # Обновляем время чекина (добавь функцию в database.py если её нет)
+    db.update_checkin(call.from_user.id, 0) 
+    
+    await call.message.answer(f"🎁 Вы получили ежедневный бонус: {reward} ⭐!")
+    await call.answer()
+
+@dp.callback_query(F.data == "high_reward")
+async def cb_high_reward(call: types.CallbackQuery):
+    await call.answer("🔥 Спец-задания появятся после запуска основного пула!", show_alert=True)
+
+@dp.callback_query(F.data == "refs")
+async def cb_refs_menu(call: types.CallbackQuery):
+    l1, l2 = db.get_detailed_refs(call.from_user.id)
+    bot_info = await bot.get_me()
+    link = f"https://t.me/{bot_info.username}?start={call.from_user.id}"
+    
+    text = (
+        f"👥 **ВАША КОМАНДА**\n\n"
+        f"🥇 Уровень 1: `{l1}` чел.\n"
+        f"🥈 Уровень 2: `{l2}` чел.\n\n"
+        f"🔗 **Ваша ссылка для приглашения:**\n`{link}`"
+    )
+    await call.message.edit_text(text, reply_markup=kb.main_menu(), parse_mode="Markdown")
 
 # --- ГЛАВНЫЙ ЗАПУСК ---
 
