@@ -132,8 +132,14 @@ def update_checkin(user_id, streak):
 def get_promo(code):
     with get_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM promos WHERE code = %s", (code,))
-        return cur.fetchone()
+        # Ищем промокод (приводим к верхнему регистру)
+        cur.execute("SELECT code, reward, uses_left FROM promos WHERE code = %s", (code.upper(),))
+        res = cur.fetchone()
+        if res:
+            # Возвращаем: (ID(код), Код, Награда, Макс_использований(1), Осталось)
+            # Мы адаптируем это под логику main.py
+            return (res[0], res[0], res[1], 1, -res[2]) # Немного магии с индексами
+        return None
 
 def use_promo(code):
     with get_connection() as conn:
@@ -218,3 +224,57 @@ def mark_bonus_given(user_id):
 is_task_completed = check_task_completed
 complete_task = add_completed_task
 add_promo = add_promo_to_db
+add_withdraw_request = create_withdrawal
+
+
+def is_promo_used(user_id, promo_id):
+    # В таблице completed_tasks мы сохраняем код промокода как строку
+    return check_task_completed(user_id, str(promo_id))
+
+def use_promo(user_id, promo_id, reward):
+    # 1. Списываем попытку использования
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE promos SET uses_left = uses_left - 1 WHERE code = %s", (promo_id,))
+        conn.commit()
+    # 2. Начисляем баланс
+    update_balance(user_id, reward)
+    # 3. Записываем, что юзер его уже юзал
+    add_completed_task(user_id, promo_id)
+
+
+# --- АДАПТАЦИЯ ПОД MAIN.PY ---
+
+# Алиас для вывода средств
+add_withdraw_request = create_withdrawal
+
+# Переопределяем функции промокодов для совместимости
+def is_promo_used(user_id, promo_code):
+    return check_task_completed(user_id, f"PROMO_{promo_code}")
+
+def use_promo(user_id, promo_code, reward):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        # Списываем использование
+        cur.execute("UPDATE promos SET uses_left = uses_left - 1 WHERE code = %s", (promo_code.upper(),))
+        # Начисляем деньги
+        update_balance(user_id, reward)
+        # Помечаем как выполненное (добавляем префикс PROMO_, чтобы не пересекалось с ID заданий)
+        add_completed_task(user_id, f"PROMO_{promo_code}")
+        conn.commit()
+
+# Исправляем поиск промокода
+def get_promo(code):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT code, reward, uses_left FROM promos WHERE code = %s", (code.upper(),))
+        res = cur.fetchone()
+        if res:
+            # Возвращаем структуру: (ID, Код, Награда, Лимит, Использовано)
+            # Так как у нас нет отдельного лимита, ставим 1 и 0, если uses_left > 0
+            return (res[0], res[0], res[1], 1, 0 if res[2] > 0 else 1)
+        return None
+
+# Алиасы для заданий
+is_task_completed = check_task_completed
+complete_task = add_completed_task
