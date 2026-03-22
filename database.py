@@ -77,12 +77,22 @@ def add_user(user_id, ref_id=None):
 def update_balance(user_id, amount):
     with get_connection() as conn:
         cur = conn.cursor()
-        # Если amount отрицательный (вывод), проверяем, хватает ли баланса
+
         if amount < 0:
-            cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s AND balance >= %s", (amount, user_id, abs(amount)))
+            cur.execute(
+                "UPDATE users SET balance = balance + %s WHERE id = %s AND balance >= %s",
+                (amount, user_id, abs(amount))
+            )
+            success = cur.rowcount > 0
         else:
-            cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s", (round(amount, 2), user_id))
+            cur.execute(
+                "UPDATE users SET balance = balance + %s WHERE id = %s",
+                (round(amount, 2), user_id)
+            )
+            success = True
+
         conn.commit()
+        return success
 
 # --- ФУНКЦИИ ЗАДАНИЙ ---
 
