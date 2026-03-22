@@ -559,27 +559,30 @@ async def handle_all_text(message: types.Message):
             return
 
     # =========================
-    # 🟡 2. ПРОМОКОД
+    # 🟡 2. ЛОГИКА ПРОМОКОДА
     # =========================
     if promo_cache.get(user_id):
         code = text.upper()
-        promo = db.get_promo(code)
+        promo = db.get_promo(code) # Получаем (Код, Код, Награда, 1, Статус)
 
         if not promo:
             await message.answer("❌ Такого промокода нет.")
-        elif promo[2] <= 0:
+        elif promo[4] == 1: # Проверка: закончились ли использования
             await message.answer("❌ Промокод закончился.")
         else:
-            p_id = f"PROMO_{code}"
-
-            if db.is_task_completed(user_id, p_id):
+            # Проверяем, не юзал ли юзер его раньше (с префиксом PROMO_)
+            if db.is_promo_used(user_id, code):
                 await message.answer("🚫 Вы уже использовали этот код.")
             else:
-                db.update_balance(user_id, promo[1])
-                db.add_completed_task(user_id, p_id)
-                db.use_promo(user_id, code, promo[1])
-                await message.answer(f"✅ Начислено {promo[1]} ⭐")
+                # Используем награду из promo[2]
+                reward = promo[2]
+                
+                # Вызываем функцию из базы, которая сама всё начислит и спишет
+                db.use_promo(user_id, code, reward)
+                
+                await message.answer(f"✅ Начислено {reward} ⭐")
 
+        # Обязательно убираем юзера из режима ожидания текста
         promo_cache.pop(user_id, None)
         return
 
@@ -587,7 +590,6 @@ async def handle_all_text(message: types.Message):
     # ⚪ 3. ЕСЛИ НИЧЕГО
     # =========================
     await message.answer("❓ Используй кнопки меню.")
-    
 
 
 @dp.callback_query(F.data.startswith("adm_"))
