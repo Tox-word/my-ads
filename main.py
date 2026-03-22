@@ -466,6 +466,7 @@ async def promo_menu_handler(message: types.Message):
     if message.from_user.id in withdraw_cache: del withdraw_cache[message.from_user.id]
     
     promo_cache[message.from_user.id] = True
+    withdraw_cache.pop(message.from_user.id, None)  # ← ВОТ ЭТО ДОБАВЬ
     await message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
 
 # Если нажали инлайн-кнопку (из профиля или заданий)
@@ -474,6 +475,7 @@ async def promo_callback_handler(call: types.CallbackQuery):
     if call.from_user.id in withdraw_cache: del withdraw_cache[call.from_user.id]
     
     promo_cache[call.from_user.id] = True
+    withdraw_cache.pop(call.from_user.id, None)  # ← ДОБАВЬ
     await call.message.answer("🎟 **Введите ваш промокод:**", parse_mode="Markdown")
     await call.answer()
 
@@ -487,6 +489,7 @@ async def choose_method(call: types.CallbackQuery):
     
     method = call.data.split("_")[1].upper()
     withdraw_cache[call.from_user.id] = {'method': method}
+    promo_cache.pop(call.from_user.id, None)  # ← ДОБАВЬ
     
     await call.message.answer(
         f"✅ Выбран метод: **{method}**\n\n"
