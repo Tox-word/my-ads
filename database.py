@@ -68,6 +68,10 @@ def init_db():
         END$$;
         """)
         
+        # Добавь это ПЕРЕД conn.commit()
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_users_ref_id ON users(ref_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_completed_tasks_user ON completed_tasks(user_id)")
+        
         conn.commit()
 
 # --- ФУНКЦИИ ПОЛЬЗОВАТЕЛЕЙ ---
@@ -89,21 +93,31 @@ def add_user(user_id, ref_id=None):
     return False     # Пользователь уже существует (СТАРЫЙ)
 
 # Начисление с защитой от минуса
-def update_balance(user_id, amount):
+def update_balance(user_id, amount, is_ref_reward=False):
     with get_connection() as conn:
         cur = conn.cursor()
+        amount = round(amount, 2)
 
         if amount < 0:
+            # Защита от ухода баланса в минус при выводе
             cur.execute(
                 "UPDATE users SET balance = balance + %s WHERE id = %s AND balance >= %s",
                 (amount, user_id, abs(amount))
             )
             success = cur.rowcount > 0
         else:
-            cur.execute(
-                "UPDATE users SET balance = balance + %s WHERE id = %s",
-                (round(amount, 2), user_id)
-            )
+            if is_ref_reward:
+                # Если это бонус за рефа, обновляем и текущий баланс, и общую статку
+                cur.execute(
+                    "UPDATE users SET balance = balance + %s, total_ref_earned = total_ref_earned + %s WHERE id = %s",
+                    (amount, amount, user_id)
+                )
+            else:
+                # Обычное начисление (за задания или промо)
+                cur.execute(
+                    "UPDATE users SET balance = balance + %s WHERE id = %s",
+                    (amount, user_id)
+                )
             success = True
 
         conn.commit()
