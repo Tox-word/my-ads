@@ -208,28 +208,29 @@ async def cmd_start(message: types.Message, command: CommandObject):
                 f"После подписки снова нажми /start"
             )
 
-        # 4. Начисление бонуса пригласившему (только если подписка ОК и бонус еще не выдан)
-        user_data = db.get_user(user_id) # (id, balance, ref_id, last_checkin, streak, total_ref, ref_bonus_given)
+# 4. Начисление бонуса пригласившему
+        user_data = db.get_user(user_id)
         
-        # Индекс [6] — это ref_bonus_given в твоем database.py
-        if user_data and not user_data[6]:
-            actual_ref_id = user_data[2] # Индекс [2] — это ref_id
+        # Проверяем: юзер есть в базе и бонус за него ЕЩЕ НЕ ВЫДАВАЛИ
+        if user_data and not user_data[6]: 
+            actual_ref_id = user_data[2] # Берем того, кто пригласил
             
             if actual_ref_id:
-                # Начисляем Папе (L1)
-                db.update_balance(actual_ref_id, 5.0)
+                # Начисляем Папе (L1) + обновляем статистику (True)
+                db.update_balance(actual_ref_id, 5.0, True) 
                 
-                # Ищем Дедушку (L2) через того, кто пригласил Папу
+                # Ищем Дедушку (L2)
                 parent_data = db.get_user(actual_ref_id)
                 if parent_data and parent_data[2]:
-                    db.update_balance(parent_data[2], 1.0)
+                    # Начисляем Дедушке (L2) + обновляем статистику (True)
+                    db.update_balance(parent_data[2], 1.0, True)
                 
                 try:
                     await bot.send_message(actual_ref_id, "👥 **Новый активный реферал!**\n💰 +5.0 ⭐", parse_mode="Markdown")
                 except:
                     pass
             
-            # Ставим отметку, чтобы больше не платить за этого юзера
+            # ВАЖНО: Ставим отметку, чтобы бонус не выдался второй раз
             db.mark_bonus_given(user_id)
 
         # 5. Главное меню
