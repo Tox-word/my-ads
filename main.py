@@ -183,17 +183,16 @@ async def cmd_start(message: types.Message, command: CommandObject):
     try:
         user_id = message.from_user.id
         
-        # 1. Анти-фрод (проверка фото и юзернейма)
+        # 1. Анти-фрод
         bad_msg = await is_bad_user(message)
         if bad_msg:
             return await message.answer(bad_msg)
         
-        # 2. Регистрация (проверяем, новый ли юзер)
+        # 2. Регистрация
         existing_user = db.get_user(user_id)
         ref_id = None
         
         if not existing_user:
-            # Если пришел по ссылке: /start 12345
             if command.args and command.args.isdigit():
                 if int(command.args) != user_id:
                     ref_id = int(command.args)
@@ -208,32 +207,10 @@ async def cmd_start(message: types.Message, command: CommandObject):
                 f"После подписки снова нажми /start"
             )
 
-# 4. Начисление бонуса пригласившему
-        user_data = db.get_user(user_id)
-        
-        # Проверяем: юзер есть в базе и бонус за него ЕЩЕ НЕ ВЫДАВАЛИ
-        if user_data and not user_data[6]: 
-            actual_ref_id = user_data[2] # Берем того, кто пригласил
-            
-            if actual_ref_id:
-                # Начисляем Папе (L1) + обновляем статистику (True)
-                db.update_balance(actual_ref_id, 5.0, True) 
-                
-                # Ищем Дедушку (L2)
-                parent_data = db.get_user(actual_ref_id)
-                if parent_data and parent_data[2]:
-                    # Начисляем Дедушке (L2) + обновляем статистику (True)
-                    db.update_balance(parent_data[2], 1.0, True)
-                
-                try:
-                    await bot.send_message(actual_ref_id, "👥 **Новый активный реферал!**\n💰 +5.0 ⭐", parse_mode="Markdown")
-                except:
-                    pass
-            
-            # ВАЖНО: Ставим отметку, чтобы бонус не выдался второй раз
-            db.mark_bonus_given(user_id)
+        # --- ВОТ ТУТ МЫ ВЫЗЫВАЕМ НАЧИСЛЕНИЕ ---
+        await grant_ref_bonus(user_id)
 
-        # 5. Главное меню
+        # 4. Финальный ответ
         await message.answer(
             f"✅ Добро пожаловать в **Money Farm**!\nЗарабатывай звезды, выполняя задания.", 
             reply_markup=kb.main_menu(), 
@@ -244,43 +221,37 @@ async def cmd_start(message: types.Message, command: CommandObject):
         print(f"ОШИБКА В /START: {e}")
         await message.answer("⚠️ Произошла ошибка. Попробуй позже.")
 
-# --- НАЧИСЛЕНИЕ ЗА РЕФЕРАЛА (ВСТАВЛЯТЬ СЮДА) ---
-    
-    # 1. Получаем свежие данные юзера из базы
+# Саму функцию grant_ref_bonus вынеси ВНЕ cmd_start (ниже или выше)
+async def grant_ref_bonus(user_id):
+    """Единая функция начисления бонусов за приглашение"""
     user_data = db.get_user(user_id)
-    # ПРОВЕРЬ ИНДЕКС: если в таблице users колонка ref_bonus_given 
-    # идет шестой по счету, то индекс будет [5]
-    bonus_already_given = user_data[6] if user_data else True 
-
-    # 2. Проверяем: подписан ли он И не давали ли мы за него бонус ранее
-    if is_subscribed and not bonus_already_given:
-        # Достаем того, кто его пригласил
-        actual_ref_id = user_data[2] if user_data else None
+    
+    # 1. Проверка: давали ли уже бонус?
+    if user_data and not user_data[6]:
+        actual_ref_id = user_data[2] # Папа (L1)
         
         if actual_ref_id:
-            # Начисляем Папе (L1)
-            db.update_balance(actual_ref_id, 5.0)
+            # --- ШАГ 1: НАЧИСЛЯЕМ ПАПЕ (L1) ---
+            db.update_balance(actual_ref_id, 5.0, is_ref_reward=True)
             
-            # Ищем Дедушку (L2)
+            # --- ШАГ 2: ИЩЕМ И НАЧИСЛЯЕМ ДЕДУШКЕ (L2) ---
             parent_data = db.get_user(actual_ref_id)
             if parent_data and parent_data[2]:
-                db.update_balance(parent_data[2], 1.0)
-            
-            # Уведомляем Папу
-            try:
-                await bot.send_message(
-                    actual_ref_id, 
-                    "👥 **У вас новый активный реферал!**\n💰 Вам начислено: **5.0 ⭐**", 
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-        
-        # СТАВИМ ГАЛОЧКУ: бонус за этого юзера выдан, больше не платим
-        db.mark_bonus_given(user_id)
+                grandpa_id = parent_data[2]
+                db.update_balance(grandpa_id, 1.0, is_ref_reward=True)
+                
+                # Уведомляем Дедушку
+                try:
+                    await bot.send_message(grandpa_id, "👥 **Реферал 2-го уровня!**\n💰 +1.0 ⭐", parse_mode="Markdown")
+                except: pass
 
-    # 4. Финальный ответ: Главное меню
-    await message.answer(f"✅ Подписка подтверждена! Добро пожаловать в Money Farm!", reply_markup=kb.main_menu())
+            # --- ШАГ 3: УВЕДОМЛЯЕМ ПАПУ ---
+            try:
+                await bot.send_message(actual_ref_id, "👥 **Новый активный реферал!**\n💰 +5.0 ⭐", parse_mode="Markdown")
+            except: pass
+        
+        # --- ШАГ 4: СТАВИМ МЕТКУ В БАЗЕ ---
+        db.mark_bonus_given(user_id)
 
 # --- ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ ---
 @dp.callback_query(F.data == "profile")
