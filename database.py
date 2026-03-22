@@ -52,6 +52,21 @@ def init_db():
                         reward REAL, 
                         uses_left INTEGER,
                         required_channel_id TEXT)''')
+
+        # Проверяем и добавляем колонку ref_bonus_given, если её нет
+        cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name='users'
+                AND column_name='ref_bonus_given'
+            ) THEN
+                ALTER TABLE users ADD COLUMN ref_bonus_given BOOLEAN DEFAULT FALSE;
+            END IF;
+        END$$;
+        """)
         
         conn.commit()
 
